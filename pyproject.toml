@@ -1,0 +1,51 @@
+[project]
+name = "uadub"
+version = "0.1.0"
+description = "Локальний AI-дубляж відео українською (з англійської, корейської та ін.) для Apple Silicon"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "parakeet-mlx>=0.5.3",
+    "mlx-whisper>=0.4.2",  # non-English speech (Korean, …)
+    "mlx-lm>=0.32.0",
+    "audio-separator[cpu]>=0.45.0",
+    "audioread>=3.0",  # used by audio-separator but not declared by it
+    "ukrainian-tts>=6.0.2",
+    "omnivoice>=0.2.1",
+    # StyleTTS2-ukrainian (correct stress, no cloning)
+    "styletts2-inference @ git+https://github.com/patriotyk/styletts2-inference@209352700cf703a05ff94501290095dd9072fd5f",
+    "ipa-uk @ git+https://github.com/patriotyk/ipa-uk@3faf05ec50fd4880965b6c76f8e479a4f82117f5",
+    "munch",
+    "einops",
+    "einops-exts",
+    "pedalboard>=0.9.20",
+    "pyloudnorm>=0.1.1",
+    "soundfile>=0.13",
+    "soxr>=0.5",
+    "num2words>=0.5.14",
+    "numpy>=2.0",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+uadub = "uadub.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["uadub"]
+
+[tool.uv]
+# styletts2-inference pins numpy<2 without needing it; the rest of the stack needs numpy 2.
+override-dependencies = ["numpy>=2.0"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.uadub/
+*.pyc
+.pytest_cache/
+.dist/
+*.mp4
+*.wav
+*.log
+.DS_Store

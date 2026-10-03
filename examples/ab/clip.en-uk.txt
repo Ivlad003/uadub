@@ -1,0 +1,111 @@
+[00:00]
+EN: Now, when it comes to downloading a model, this is again kind of confusing because unfortunately there's not just a big flashing download button showing up on the screen for you.
+UK: Завантаження моделі може збити з пантелику, бо тут немає великої кнопки «завантажити» на весь екран.
+
+[00:07]
+EN: So let's go back to where we are on the base model.
+UK: Повернімося до базової моделі.
+
+[00:09]
+EN: Because most of the time, you're going to start with a base model.
+UK: Адже ви почнете саме з неї.
+
+[00:11]
+EN: You're like, I really want to download a Quen 3.6 model.
+UK: Наприклад, ви хочете завантажити модель Qwen 3.6.
+
+[00:14]
+EN: So from here, like I said, this use this model button.
+UK: Ось кнопка «використати цю модель».
+
+[00:17]
+EN: There's no option in here for LM Studio, but that browse quantization button is right there.
+UK: Для LM Studio окремого пункту немає, але кнопка квантування поруч.
+
+[00:21]
+EN: It's the same thing if I clicked quantizations down here.
+UK: Все те саме, якщо я натисну на «квантування» нижче.
+
+[00:24]
+EN: Both these buttons lead you to the exact same page.
+UK: Обидві кнопки ведуть на одну сторінку.
+
+[00:26]
+EN: It just leads you to a list of all those quantized models.
+UK: Вона відкриває список квантованих моделей.
+
+[00:29]
+EN: Now once you filter, you're like, okay, I want an LM Studio model, maybe I want MLX or whatever.
+UK: Після фільтрації оберіть модель для LM Studio або MLX.
+
+[00:34]
+EN: Once you filter that down, let's say that I'm going to choose this model right here.
+UK: Після фільтрації я оберу цю модель.
+
+[00:37]
+EN: I can click on this, and now is where I get the list of all those quantizations on the side.
+UK: Я натисну на неї, і збоку з'явиться список усіх варіантів квантування.
+
+[00:41]
+EN: There's two ways to download a model from this page.
+UK: Тут є два способи завантаження моделі.
+
+[00:44]
+EN: One, you can just click on a quantization.
+UK: Перший — натиснути на квантування.
+
+[00:46]
+EN: You click on this quantization, it's going to pop up a pop-up.
+UK: Ви обираєте квантування, і з'являється вікно.
+
+[00:49]
+EN: Click on use this model, find LM Studio or whatever system you're using.
+UK: Натисніть «використати цю модель» та оберіть LM Studio.
+
+[00:52]
+EN: And when you click that, it'll ask you to open an LM Studio and it'll give you the download link for that exact quantization you selected.
+UK: Після цього система запропонує відкрити LM Studio та завантажити обране квантування.
+
+[00:58]
+EN: You can see right here it's saying download this model, and it's telling me this is too large because obviously this system doesn't even have a dedicated graphics card inside of it.
+UK: Тут написано «завантажити модель», але вона занадто велика для мого ПК без відеокарти.
+
+[01:06]
+EN: Now the other way you can download models, which is equally as easy, is you can click all the way at the top here where it says use this model,
+UK: Другий спосіб завантаження — такий же простий: натисніть зверху на «використати цю модель»,
+
+[01:14]
+EN: scroll down for LM Studio, and again, that'll open your link in LM Studio and it'll try to choose the smallest model or the largest model that it thinks can fit on your system.
+UK: прокрутіть до LM Studio. Це знову відкриє посилання в LM Studio, де система спробує підібрати найменшу або найбільшу модель, що підходить вашій системі.
+
+[01:22]
+EN: So you can see in our case, it chose this two-bit version quantization.
+UK: Як бачите, у нашому випадку обрано двобітну версію.
+
+[01:26]
+EN: So it'll try to choose what can fit on your system best.
+UK: Вона підбере те, що підходить системі.
+
+[01:29]
+EN: So if you're not really sure what you want to put on your system, using that top option of use this model will kind of guide you towards the possible correct option.
+UK: Тож, якщо ви не впевнені, що саме варто встановити, варіант «використати цю модель» допоможе підібрати правильний варіант.
+
+[01:37]
+EN: But once you start to learn more, you may probably know better than the recommendation from LM Studio, and then you can choose the exact quantization you want here.
+UK: А коли ви розберетеся краще, то зможете самі обрати потрібне квантування.
+
+[01:45]
+EN: And either way, it doesn't matter how you get to LM Studio, you can always select any of the options from the list.
+UK: У будь-якому разі, незалежно від способу, ви можете обрати будь-який варіант зі списку.
+
+[01:50]
+EN: This list right here is the same list we just saw in Hugging Face.
+UK: Цей список такий самий, як ми бачили на Hugging Face.
+
+[01:53]
+EN: It's just in LM Studio, and we can choose whichever one we want from this list.
+UK: Тільки тепер він у LM Studio, і ми можемо обрати будь-що.
+
+[01:57]
+EN: So for our case, I actually have a base model for you to start from.
+UK: Для прикладу я підготував базову модель.
