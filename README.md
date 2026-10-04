@@ -47,6 +47,8 @@ uadub video.mp4 --voice clone                  # the original speaker's voice (s
 uadub video.mp4 --voice st --emotion           # …with the intonation of the original lines
 uadub video.mp4 --voice st --review            # pause before voicing to check the translation
 uadub drama.mkv --from ko --voice duo:st       # Korean drama: male and female lines, two voices
+uadub talk.mp4 --voice st --domain             # for specialists: field jargon, UI labels as on screen
+uadub lecture.mp4 --voice st                   # over 45 min: dubbed in parts cut at pauses
 uadub --list-voices                            # every available voice
 ```
 
@@ -215,14 +217,28 @@ Videos longer than 45 minutes are dubbed in parts automatically:
   and `--domain` stay the same everywhere;
 - each finished part appears as a preview in `<name>.uk.parts/NN.uk.mp4`;
 - at the end the parts are joined into one `<name>.uk.mp4` and `<name>.uk.srt` over the original
-  video (no re-encoding of the video).
+  video (no re-encoding of the video), and the previews are deleted.
 
-Memory does not grow with the video length. If a part fails, the others continue; run the same
-command again to finish. If a part fails while it is still being recognised, the run stops before the
-shared brief (it needs every transcript); the error is saved in `state.json` in the work folder, and
-a rerun continues. To fix one part, edit `<name>.uadub/parts/NN/review.md` (it exists after a run
-with `--review` or `--review-with`) and rerun: only that part is re-voiced and the result is re-joined. With `--review` the pause happens for each part;
-`q` stops the whole run.
+The plan comes first:
+
+```
+Довге відео (1:12:30) → 5 частин по ~15 хв, розрізи в паузах:
+  01  0:00:00–0:14:41   пауза 1,2 с
+  02  0:14:41–0:29:58   пауза 0,9 с
+  …
+```
+
+Memory does not grow with the video length. Running the same command again continues where it
+stopped:
+
+- if a part fails, the others continue; the error is saved in `state.json` in the work folder;
+- if a part fails while it is still being recognised, the run stops before the shared brief (it
+  needs every transcript);
+- a part whose audio is almost entirely damaged is dubbed as silence with a warning instead of
+  stopping the whole video;
+- to fix one part, edit `<name>.uadub/parts/NN/review.md` (it exists after a run with `--review`
+  or `--review-with`) and rerun: only that part is re-voiced and the result is re-joined;
+- with `--review` the pause happens for each part; `q` stops the whole run.
 
 ```bash
 uadub lecture.mp4                       # automatic for videos over 45 min
@@ -231,7 +247,8 @@ uadub lecture.mp4 --part-minutes 0      # never split
 uadub lecture.mp4 --keep-parts          # keep the part previews
 ```
 
-The work folder needs about 10 GB for 7 hours. `--subs` does not work with parts yet: with `--subs` a
+The work folder needs about 10 GB for 7 hours; previews take about as much space as the
+original video for the parts done so far (`--keep-parts` keeps them). `--subs` does not work with parts yet: with `--subs` a
 long video is processed whole (`--subs` with an explicit `--part-minutes N` is an error). A work folder
 of an earlier whole run (for example, started before this feature) is continued whole; add
 `--part-minutes 15` to split it.
@@ -349,6 +366,14 @@ background + voice (ducking, loudness match, limiter) ─ffmpeg→ video.uk.mp4 
 Every heavy stage runs in its own process, so only one model sits in memory at a time (peak ~15 GB
 for the LLM).
 
+Long videos run the same stages part by part (ADR-027):
+
+1. extract → separate → asr for every part, each a time range of the original;
+2. one brief for the whole transcript, built chunk by chunk and merged (in its own process);
+3. translate (with the neighbouring parts' text as context) → tts → mix to one loudness target →
+   preview, part by part;
+4. ffmpeg joins the parts' audio and muxes it once over the untouched original video.
+
 Ideas borrowed from other projects: VideoLingo (brief, chunked translation with context,
 shortening pass), open-dubbing (lines may spill into the following pause, capped speed-up),
 pyVideoTrans / VoiceStudio (length budget before synthesis), and OmniVoice (generating the exact
@@ -365,7 +390,9 @@ On an M1 Pro, 32 GB:
 | Translation (Gemma 4 26B, all passes) | ~1.5–2 min per minute of video |
 | Voice, StyleTTS2 / OmniVoice (16 steps) / ukrainian-tts | ~0.2× / ~1× / ~0.4× real time |
 
-A 10-minute video takes about 30–40 minutes end to end.
+A 10-minute video takes about 30–40 minutes end to end. A 16-minute video dubbed in four parts
+took 44 minutes (≈2.8× real time; background separation is the largest share), so a 7-hour video
+takes most of a day. Peak memory is the same as for a short video.
 
 Quality was checked by transcribing the dubbed track back and comparing it with the script. The
 word error rate is 0.07–0.14, and most "errors" are numbers that the recogniser wrote as digits.
@@ -383,12 +410,17 @@ All 31 StyleTTS2 voices transcribed back perfectly on a test sentence.
 - A damaged audio track (corrupt AAC packets) is salvaged rather than rejected. The broken parts
   become silence, stay in sync with the video, and are not translated. The console prints how many
   seconds were lost.
+- Long videos are cut in pauses. When there is no pause within ±3 minutes of a target (music,
+  constant noise), the cut falls in the quietest second nearby, is marked in the plan, and may
+  split a word.
 
 ## Project layout
 
 ```
 uadub/cli.py        CLI, stages in separate processes, state cache, the --review pause
 uadub/stages.py     extract → separate → asr → translate → tts → mix → mux
+uadub/parts.py      long videos: cut plan at pauses, part runs, shared brief, joining
+uadub/audio.py      ffmpeg: extraction (salvages damaged tracks), loudness, mux
 uadub/translate.py  prompts: brief, sense-for-sense translation, shortening, anglicisms, homographs
 uadub/tts.py        StyleTTS2, OmniVoice and ukrainian-tts engines
 uadub/stress.py     stress dictionaries, homographs, ARPAbet for OmniVoice

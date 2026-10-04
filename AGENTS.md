@@ -13,6 +13,12 @@ uadub is a CLI that dubs a foreign-language video into Ukrainian. It runs locall
 extract → separate → asr → translate → tts → mix → mux
 ```
 
+Videos over 45 minutes (or with `--part-minutes N`) run this pipeline once per part (`uadub/parts.py`,
+ADR-027): each part is an ordinary work folder `parts/NN` with a time range of the input
+(`clip_start`/`clip_end`). Phase 1 runs extract → asr for all parts, phase 2 builds one shared brief
+in a `spawn` subprocess, phase 3 runs translate → mux per part (writing `dub.flac` + a preview), and
+the parts' audio is concatenated and muxed once over the original video.
+
 - Read `spec.md` first: it has the requirements and the ADRs that explain why things are the way they are.
 - User docs: `README.md` (English, primary) and `README.uk.md` (Ukrainian).
 
@@ -44,7 +50,8 @@ extract → separate → asr → translate → tts → mix → mux
 | `uadub/stress.py` | dictionaries, `StressFixer`, `HomographFinder`, ARPAbet, `lookup()` |
 | `uadub/review.py` | `review.md` export/import, generated `AGENTS.md` text, `agent_command` (`harness:model`) |
 | `uadub/texts.py` | `--text` output files |
-| `uadub/textnorm.py`, `segments.py`, `fit.py`, `srt.py`, `subs.py`, `term.py`, `audio.py` | helpers |
+| `uadub/audio.py` | ffmpeg/ffprobe: `extract_audio` (damaged-track salvage, ADR-025; sample-exact clips), `existing` / FLAC stems, `loudness`, `mux` (`clip` for part previews) |
+| `uadub/textnorm.py`, `segments.py`, `fit.py`, `srt.py`, `subs.py`, `term.py` | helpers |
 
 ## Rules for changes
 
@@ -77,7 +84,12 @@ extract → separate → asr → translate → tts → mix → mux
    and pace scripts, and the numbers are reported.
 9. **Docs.** A user-visible flag or behaviour change updates both READMEs (options table plus the
    relevant section), and a design decision gets an ADR in `spec.md`.
-10. **Measure.** For audio quality changes, report before/after metrics:
+10. **Part mode.** Every stage must also work for a part:
+    - honour `opt.clip_start` / `opt.clip_end` and keep lengths sample-exact (`A.fit_length`);
+    - a finished part keeps its stems as FLAC and may have no `audio.wav`: read inputs through
+      `A.existing` / `stages._voice_src`, never by a hard-coded `.wav` name;
+    - new part-only `Options` fields enter a fingerprint only when set (rule 1).
+11. **Measure.** For audio quality changes, report before/after metrics:
     - CER/WER;
     - syllables per second and drawn-out lines;
     - pitch range for prosody.
@@ -93,6 +105,10 @@ extract → separate → asr → translate → tts → mix → mux
 - Killing a run can leave orphaned `spawn` children writing to the same work folder; kill them before rerunning.
 - Claude Code as an LLM: thinking is disabled through `MAX_THINKING_TOKENS=0`; with thinking, calls are 3–6× slower.
 - Logs contain carriage returns: use `LC_ALL=C tr '\r' '\n' < log | grep -a …`.
+- Stage subprocesses import the code afresh: do not edit `uadub/` while a real run is in progress,
+  or later stages run a different version than earlier ones.
+- Long-video check (~45 min): concatenate `examples/ab/clip.mp4` eight times with the ffmpeg concat
+  demuxer and run it with `--part-minutes 5`; compare the output duration with the input (±0.05 s).
 
 ## Definition of done
 
@@ -100,3 +116,4 @@ extract → separate → asr → translate → tts → mix → mux
 - Relevant fingerprints are bumped.
 - READMEs and `spec.md` are updated.
 - For pipeline changes: one real run on `examples/ab/clip.mp4`, with metrics reported.
+- For part-mode changes (`parts.py`, clip handling, assembly): the long-video check above.
