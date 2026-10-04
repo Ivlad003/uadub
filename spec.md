@@ -58,7 +58,7 @@ subtitles are embedded. By default everything runs offline on the user's MacBook
 | FR-10 | Clickable and copyable file links in the terminal | ✅ |
 | FR-11 | Korean source (dramas) plus other languages; use existing subtitles as input | ✅ |
 | FR-12 | Male/female voices chosen per line for dialogue (`duo`) | ✅ |
-| FR-13 | No anglicisms in the translation; no drawn-out speech | ✅ |
+| FR-13 | No anglicisms in the translation (default; `--domain` allows the field's established jargon, ADR-026); no drawn-out speech | ✅ |
 | FR-14 | Translation by meaning, not literally; idioms replaced with Ukrainian equivalents; use the whole transcript as context | ✅ |
 | FR-15 | Reproduce the original intonation (`--emotion`) | ✅ (StyleTTS2, experimental) |
 | FR-16 | Save the original transcript, the translation, the stressed text and a bilingual text as `.txt`, with links (`--text`) | ✅ |
@@ -66,13 +66,14 @@ subtitles are embedded. By default everything runs offline on the user's MacBook
 | FR-18 | Fully automatic review by an agent, with model choice (`--review-with harness:model`) | ✅ |
 | FR-19 | Translation through an agent CLI (Claude, opencode, Codex, Gemini) as an option (`--llm harness:model`) | ✅ |
 | FR-20 | Documentation: English README (primary) plus Ukrainian README | ✅ |
+| FR-21 | Long videos (4–7 h): automatic parts cut at pauses, one shared brief, previews, one result | ✅ |
 
 ### 2.2 Non-functional requirements
 
 | ID | Requirement |
 |---|---|
 | NFR-1 | Runs offline after a one-time `uadub --prefetch --all` (cloud LLM and agent options are opt-in exceptions) |
-| NFR-2 | Fits in 32 GB unified memory: only one heavy model is resident at a time |
+| NFR-2 | Fits in 32 GB unified memory: only one heavy model is resident at a time; long videos are processed in parts, so RAM does not grow with the length (ADR-027) |
 | NFR-3 | Re-running a command is cheap: finished stages are cached and only affected stages are redone |
 | NFR-4 | Quality is measurable: round-trip ASR intelligibility (CER/WER), speaking pace, pitch range |
 | NFR-5 | Console UX in Ukrainian; code, comments and the primary docs in English |
@@ -364,6 +365,75 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
   - Long jobs run in the background with log polling (the remote shell has a 60 s limit).
 - **Consequences:** Reproducible deploys. Not relevant to end users.
 
+### ADR-025: Damaged audio tracks
+- **Context:** Recordings with corrupt AAC packets (cut from a damaged OBS file) made the extract
+  stage fail. ffmpeg either drops bad packets, which shifts all later audio, or dies with
+  `Error reinitializing filters` when a garbage packet "changes" the sample rate. A garbage packet
+  can also leave the decoder in a broken state, so later good packets fail too. Apple's `aac_at`
+  decoder stalls the same way.
+- **Decision:**
+  - `extract_audio` runs one ffmpeg call with `-max_error_rate 1.0`. If its stderr has no decoder
+    errors, the result is used as before.
+  - Otherwise `salvage_timeline` assembles a buffer of the input's length. It restarts ffmpeg with a
+    fresh decoder (`-ss pos`, `-reinit_filter 0`, `aresample=async=1`) 0.5 s past the last decoded
+    sample each time a run dies, and writes every piece at its own timestamp. Gaps stay silent.
+  - The console reports how much is silent. More than 90% silent aborts with a plain message.
+  - Non-heavy stages turn `RuntimeError` into a one-message `SystemExit` without a traceback.
+- **Consequences:** The dub stays in sync with the video, and the damaged parts become silence. A
+  badly damaged 23-minute file takes about 25 s to salvage. The extract fingerprint is unchanged,
+  because clean files decode exactly as before.
+
+
+### ADR-026: Field detection and the specialist mode (`--domain`)
+- **Context:** The plain style of ADR-008 (no anglicisms, every term translated) suits a general
+  audience. Talks for specialists, such as software developers, sound unnatural without the jargon
+  they actually use («деплой», «пул-реквест»).
+- **Decision:**
+  - The brief always returns `domain`, the field of the video. It is printed in both modes but
+    changes nothing in the plain mode, whose prompts are unchanged.
+  - `--domain` (`Options.domain = "auto"`) or `--domain FIELD` switches to the specialist mode. Rule
+    5 of the translation prompt asks for the field's professional terminology, including
+    established anglicisms. On-screen UI labels stay in Latin in quotes. Slang and ad-hoc
+    transliterations of ordinary words are still banned.
+  - The brief's glossary collects the field's jargon (up to 40 entries). Its words are exempt from
+    the anglicism pass, whose prompt changes to "replace only what specialists would not say".
+  - `review.md`, the generated `AGENTS.md`, the agent prompt and the `--review` hint use the same
+    rule. The "not in the dictionary" list drops glossary jargon.
+  - A spelling pass (`spell_latin`) asks for a Cyrillic `tts` for every line that still has Latin
+    text and no `tts`, because the letter-by-letter fallback reads «Use this model» as «асе тіс
+    модел». The anglicism pass also keeps a `tts` it returns for a line it left unchanged.
+  - `domain` enters the translate fingerprint only when set, so existing caches survive.
+- **Consequences:** One flag gives a plain or a specialist dub of the same video. Quality in
+  narrow fields depends on how well the LLM knows the jargon; `--glossary` overrides it.
+
+### ADR-027: Long videos in parts
+- **Context:** A 4–7 h input kept whole needs ~1.3 GB per hour per audio copy in separation and
+  mixing, its brief sees only the first and last 12,000 characters, and one failure loses a whole
+  stage. The user cut recordings by hand and got 21 files with drifting terminology.
+- **Decision:**
+  - Inputs over 45 min (or `--part-minutes N`, when longer than 1.5 × N) are planned into parts cut
+    at the middle of the longest pause within ±3 min of each target (`uadub/parts.py`). The plan is
+    stored in `plan.json` and reused. The automatic split is skipped (with a one-line note) when the
+    work folder already holds a whole run without a plan, or with `--subs`.
+  - Only the audio is cut. Each part is an ordinary work folder (`parts/NN`) with `clip_start/end`;
+    extract and mix are sample-exact, so the parts add up to the input. A part whose audio is almost
+    all lost to damage is dubbed as near-silence instead of stopping the run (a whole input still stops).
+  - Phase 1 runs extract → asr for all parts; phase 2 builds one brief by map-reduce over the whole
+    transcript (in a spawn subprocess); phase 3 translates (with neighbouring text), voices and
+    mixes each part with one loudness target, writes `dub.flac` and a preview (video bitrate capped
+    at the source's), and compresses stems. A part whose `dub.flac` went missing is mixed again before
+    assembly. `--stop-after mux` means the whole job, assembly included.
+  - The parts' dubs are concatenated by ffmpeg and muxed once over the original video. A failed part
+    does not stop the others; a rerun resumes.
+  - A failed part is recorded in the shared work folder's `state.json` (`failed`) with its last error
+    line. If a part fails in phase 1 the run stops before phases 2 and 3, because the brief needs
+    every transcript; rerun to continue.
+  - With `--review` the pause happens per part in phase 3; `q` at a pause stops the whole run.
+- **Consequences:** Peak RAM depends on the part length, not the video length. Previews appear as
+  each part finishes (phase 3). Disk: ~10 GB for 7 h in the work folder. `--subs` is not supported in
+  part mode yet: with an automatic split the input is processed whole (more RAM), and an explicit
+  `--part-minutes N` with `--subs` is an error.
+
 ---
 
 ## 5. Rejected or deferred alternatives
@@ -410,6 +480,8 @@ Tools: `tests/roundtrip.py` (intelligibility), `tests/pace.py` (syl/s), and samp
 | `--text` | `.txt` transcript, translation, stressed text, bilingual |
 | `--stress auto|dict|off`, `--stress-dict F`, `--stress-lookup W…` | stress control and dictionary lookup |
 | `--glossary F`, `--gender m/f` | terminology, grammar gender |
+| `--domain [FIELD]` | specialist translation for the detected or given field (ADR-026) |
+| `--part-minutes N`, `--keep-parts` | long videos in parts (ADR-027) |
 | `--no-separate`, `--fast`, `--duck DB`, `--max-speed X`, `--steps N` | audio and pacing |
 | `--drop-original`, `-o`, `--workdir`, `--redo STAGE`, `--stop-after STAGE` | output and pipeline control |
 | `--prefetch [--all]`, `--list-voices` | setup |

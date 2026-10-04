@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from uadub.fit import place_clips, target_duration
 from uadub.llm import extract_json
 from uadub.segments import assign_slots, build_units, merge_tokens_to_words
@@ -297,3 +299,800 @@ def test_llm_spec_kinds():
     assert is_agent_llm("claude") and is_agent_llm("claude:sonnet") and is_agent_llm("opencode:ollama/qwen3:8b")
     assert not is_agent_llm("mlx-community/gemma-4-26b-a4b-it-4bit") and not is_agent_llm("ollama:qwen3")
     assert is_local_mlx("mlx-community/gemma-4-26b-a4b-it-4bit") and not is_local_mlx("ollama:qwen3")
+
+
+def test_salvage_timeline_keeps_pieces_at_their_time():
+    import numpy as np
+
+    from uadub.audio import salvage_timeline, silent_fraction
+
+    sr, total = 100, 10.0
+    calls = []
+
+    def decode(pos):  # the "decoder" dies at 3 s and at 6 s of the source
+        calls.append(pos)
+        end = 3.0 if pos < 3 else 6.0 if pos < 6 else total
+        y = np.ones((round((end - pos) * sr), 2), np.float32) * (pos + 1)
+        return y, end == total
+
+    y, runs = salvage_timeline(decode, total, sr, skip=0.5)
+    assert len(y) == 1000 and runs == 3
+    assert calls == [0.0, 3.5, 6.5]
+    assert y[0, 0] == 1 and y[299, 0] == 1  # first run: 0–3 s
+    assert not y[300:350].any()  # skipped past the failure → silence
+    assert y[350, 0] == 4.5 and y[599, 0] == 4.5  # second run starts exactly at 3.5 s
+    assert y[650, 0] == 7.5 and y[-1, 0] == 7.5
+    assert abs(silent_fraction(y, sr) - 0.1) < 1e-9
+
+
+def test_salvage_timeline_gives_up_on_a_dead_decoder():
+    import numpy as np
+
+    from uadub.audio import salvage_timeline, silent_fraction
+
+    y, runs = salvage_timeline(lambda pos: (np.zeros((0, 2), np.float32), False), 5.0, 100, skip=0.5)
+    assert len(y) == 500 and runs == 10
+    assert silent_fraction(y, 100) == 1.0
+
+
+def test_domain_fingerprint_only_when_on(tmp_path):
+    from uadub.config import Options
+
+    base = dict(input="a.mp4", output="a.uk.mp4", workdir=str(tmp_path), voice="st")
+    assert "domain" not in Options(**base).fingerprint("translate")
+    assert Options(domain="auto", **base).fingerprint("translate")["domain"] == "auto"
+    assert Options(domain="медицина", **base).fingerprint("translate")["domain"] == "медицина"
+
+
+def test_domain_prompts():
+    from uadub.translate import SYSTEM, anglicism_system, brief_system, terms_rule
+
+    kw = dict(gender_rule="g", glossary="", src_name="English", lang_rules="")
+    plain = SYSTEM.format(**kw, terms_rule=terms_rule(None))
+    expert = SYSTEM.format(**kw, terms_rule=terms_rule("IT / розробка ПЗ"))
+    assert "No anglicisms" in plain and "фреймворк" not in plain
+    assert "specialists in IT / розробка ПЗ" in expert and "фреймворк" in expert and "«Use this model»" in expert
+    assert '"domain"' in brief_system("English", "", None) and "квантування" in brief_system("English", "", None)
+    assert "деплой" in brief_system("English", "", "auto")
+    assert "«медицина»" in brief_system("English", "", "медицина")
+    assert "proper Ukrainian equivalents" in anglicism_system(None)
+    assert "specialists in IT" in anglicism_system("IT") and "{fix_rule}" not in anglicism_system("IT")
+
+
+def test_translate_units_specialist_mode():
+    import json as _json
+
+    from uadub.translate import translate_units
+
+    seen, logs = [], []
+
+    class FakeLLM:
+        def chat(self, system, user, *, max_tokens=4096, temperature=0.3):
+            seen.append(system)
+            if system.startswith("You prepare a translation brief"):
+                return _json.dumps({"domain": "IT / розробка ПЗ", "summary": "Про деплой.",
+                                    "glossary": [{"src": "deploy", "uk": "деплой"}]})
+            if system.startswith("You are an expert audiovisual translator"):
+                ids = [l["id"] for l in _json.loads(user)["lines"]]
+                return _json.dumps({"lines": [{"id": i, "uk": "Робимо деплой."} for i in ids]})
+            return _json.dumps({"lines": []})
+
+    units = [{"id": 1, "text": "Let's deploy.", "start": 0.0, "end": 2.0, "slot_end": 2.0}]
+    info = translate_units(FakeLLM(), units, rate=6.0, gender="male", glossary_path=None, stress="off",
+                           domain="auto", log=logs.append)
+    assert info["domain"] == "IT / розробка ПЗ" and info["domain_mode"]
+    assert any("сфера: IT / розробка ПЗ (фаховий переклад)" in l for l in logs)
+    translate_prompt = next(s for s in seen if s.startswith("You are an expert audiovisual translator"))
+    assert "specialists in IT / розробка ПЗ" in translate_prompt and "деплой" in translate_prompt
+    assert units[0]["uk"] == "Робимо деплой."  # glossary jargon is not "fixed" away
+    assert not any("прибираю" in l for l in logs)
+
+    seen.clear(), logs.clear()
+    units = [{"id": 1, "text": "Let's deploy.", "start": 0.0, "end": 2.0, "slot_end": 2.0}]
+    info = translate_units(FakeLLM(), units, rate=6.0, gender="male", glossary_path=None, stress="off",
+                           log=logs.append)
+    assert not info["domain_mode"] and any(l.endswith("сфера: IT / розробка ПЗ") for l in logs)
+    assert "No anglicisms" in next(s for s in seen if s.startswith("You are an expert audiovisual translator"))
+
+
+def test_review_texts_follow_domain_mode(tmp_path):
+    import json as _json
+
+    from uadub.config import Options
+    from uadub.review import agent_prompt, agent_task, header, review_domain
+
+    assert "без англіцизмів" in header("st") and "Без англіцизмів" in agent_task("st")
+    assert "фреймворк" in header("st", "IT") and "без англіцизмів" not in header("st", "IT")
+    task = agent_task("st", "en.srt", "IT")
+    assert "Без англіцизмів" not in task and "фахівці сфери «IT»" in task and "усталені — лишай" in task
+    assert "без англіцизмів" in agent_prompt("st") and "«IT»" in agent_prompt("st", "IT")
+
+    base = dict(input="a.mp4", output="a.uk.mp4", workdir=str(tmp_path), voice="st")
+    Options(**base).save(tmp_path / "options.json")
+    assert review_domain(tmp_path) is None
+    Options(domain="auto", **base).save(tmp_path / "options.json")
+    assert review_domain(tmp_path) == "сфера відео"
+    (tmp_path / "brief.json").write_text(_json.dumps({"domain": "IT / розробка ПЗ"}), encoding="utf-8")
+    assert review_domain(tmp_path) == "IT / розробка ПЗ"
+    Options(domain="медицина", **base).save(tmp_path / "options.json")
+    assert review_domain(tmp_path) == "медицина"
+
+
+def test_anglicism_pass_takes_spelling_of_kept_ui_label():
+    import json as _json
+
+    from uadub.translate import _dictionary_lookup, fix_anglicisms
+
+    if _dictionary_lookup() is None:
+        return  # dictionary not installed
+
+    class FakeLLM:
+        def chat(self, system, user, *, max_tokens=4096, temperature=0.3):
+            assert "specialists in IT" in system
+            ids = [l["id"] for l in _json.loads(user)["lines"]]
+            return _json.dumps({"lines": [{"id": i, "uk": "Натисніть «use this model».",
+                                           "tts": "Натисніть юз зіс модел."} for i in ids]})
+
+    units = [{"id": 1, "text": "Click use this model.", "uk": "Натисніть «use this model».", "max_syl": 12}]
+    assert fix_anglicisms(FakeLLM(), units, domain="IT", log=lambda m: None) == 0
+    assert units[0]["uk"] == "Натисніть «use this model»." and units[0]["tts"] == "Натисніть юз зіс модел."
+
+
+def test_spell_latin_fills_missing_tts_only():
+    import json as _json
+
+    from uadub.translate import spell_latin
+
+    asked = []
+
+    class FakeLLM:
+        def chat(self, system, user, *, max_tokens=4096, temperature=0.3):
+            lines = _json.loads(user)["lines"]
+            asked.extend(l["id"] for l in lines)
+            return _json.dumps({"lines": [{"id": l["id"], "tts": "Натисніть юз зіс модел."} for l in lines]})
+
+    units = [{"id": 1, "uk": "Натисніть «Use this model»."},
+             {"id": 2, "uk": "Відкрийте LM Studio.", "tts": "Відкрийте ел-ем студіо."},
+             {"id": 3, "uk": "Усе готово."}]
+    assert spell_latin(FakeLLM(), units, log=lambda m: None) == 1
+    assert asked == [1] and units[0]["tts"] == "Натисніть юз зіс модел."
+    assert units[1]["tts"] == "Відкрийте ел-ем студіо." and "tts" not in units[2]
+
+
+def test_existing_and_fit_length(tmp_path):
+    import numpy as np
+
+    from uadub import audio as A
+
+    wav = tmp_path / "vocals.wav"
+    assert A.existing(wav) == wav  # nothing there: the name itself
+    A.write_flac(tmp_path / "vocals.flac", np.zeros((10, 2), np.float32), 44100)
+    assert A.existing(wav) == tmp_path / "vocals.flac"
+    A.write(wav, np.zeros((10, 2), np.float32), 44100)
+    assert A.existing(wav) == wav  # WAV wins
+    y = np.ones((5, 2), np.float32)
+    assert A.fit_length(y, 3).shape == (3, 2)
+    padded = A.fit_length(y, 8)
+    assert padded.shape == (8, 2) and not padded[5:].any()
+    assert A.fit_length(np.ones(4, np.float32), 6).shape == (6,)
+
+
+def test_to_flac_replaces_wav(tmp_path):
+    import numpy as np
+    import soundfile as sf
+
+    from uadub import audio as A
+
+    wav = tmp_path / "background.wav"
+    A.write(wav, np.full((441, 2), 0.25, np.float32), 44100)
+    out = A.to_flac(wav)
+    assert out == tmp_path / "background.flac" and not wav.exists()
+    y, sr = sf.read(str(out), dtype="float32")
+    assert sr == 44100 and y.shape == (441, 2) and abs(float(y[0, 0]) - 0.25) < 1e-4
+
+
+def _sine_m4a(path, seconds=4, rate=48000):
+    import subprocess
+
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    f"sine=frequency=440:sample_rate={rate}:duration={seconds}", "-c:a", "aac", str(path)],
+                   check=True)
+    return path
+
+
+def test_extract_audio_clip_is_sample_exact(tmp_path):
+    import soundfile as sf
+
+    from uadub import audio as A
+
+    src = _sine_m4a(tmp_path / "src.m4a")
+    A.extract_audio(src, tmp_path / "a.wav", 44100, start=1.0, length=1.5)
+    assert sf.info(str(tmp_path / "a.wav")).frames == 66150
+
+
+def test_salvage_audio_clip_is_sample_exact(tmp_path):
+    from uadub import audio as A
+
+    src = _sine_m4a(tmp_path / "src.m4a")
+    y, runs = A._salvage_audio(src, 44100, start=1.0, length=1.5)
+    assert y.shape == (66150, 2) and runs == 1 and abs(y).max() > 0.05
+
+
+def test_part_fingerprints_only_when_set(tmp_path):
+    from uadub.config import Options
+
+    base = dict(input="a.mp4", output="a.uk.mp4", workdir=str(tmp_path), voice="st")
+    plain = Options(**base)
+    for stage in ("extract", "translate", "mix", "mux"):
+        assert not {"clip", "shared_brief", "edge", "loudness_target"} & set(plain.fingerprint(stage))
+    (tmp_path / "b.json").write_text("{}")
+    (tmp_path / "e.json").write_text("{}")
+    part = Options(**base, clip_start=10.0, clip_end=20.0, shared_brief=str(tmp_path / "b.json"),
+                   edge_context=str(tmp_path / "e.json"), loudness_target=-19.5)
+    assert part.fingerprint("extract")["clip"] == [10.0, 20.0]
+    before = part.fingerprint("translate")
+    (tmp_path / "b.json").write_text('{"a": 1}')
+    after = part.fingerprint("translate")
+    assert after["shared_brief"] != before["shared_brief"] and after["edge"] == before["edge"]
+    assert part.fingerprint("mix")["loudness_target"] == -19.5
+    assert part.fingerprint("mix")["clip"] == [10.0, 20.0] and part.fingerprint("mux")["clip"] == [10.0, 20.0]
+
+
+def _test_video(path, seconds=6):
+    import subprocess
+
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y",
+                    "-f", "lavfi", "-i", f"testsrc=size=160x120:rate=25:duration={seconds}",
+                    "-f", "lavfi", "-i", f"sine=frequency=300:sample_rate=44100:duration={seconds}",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(path)], check=True)
+    return path
+
+
+def test_mux_clip_preview_and_audio_only(tmp_path):
+    import numpy as np
+
+    from uadub import audio as A
+
+    dub = tmp_path / "dub.flac"
+    A.write_flac(dub, np.zeros((44100 * 2, 2), np.float32), 44100)
+    video = _test_video(tmp_path / "v.mp4")
+    out = tmp_path / "p.uk.mp4"
+    A.mux(video, dub, out, srt=None, keep_original=True, clip=(2.0, 2.0))
+    assert abs(A.duration(out) - 2.0) < 0.15 and A.has_stream(out, "video")
+    import subprocess
+
+    grainy = tmp_path / "grainy.mp4"  # a real-looking ~400 kbps source (testsrc alone compresses to nothing)
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=320x240:rate=25:duration=6", "-vf", "noise=alls=40:allf=t",
+                    "-c:v", "libx264", "-b:v", "300k", "-pix_fmt", "yuv420p", str(grainy)], check=True)
+    A.mux(grainy, dub, out, srt=None, keep_original=False, clip=(2.0, 2.0))
+    source_rate = A.video_bitrate(A.probe(grainy))
+    assert source_rate and A.video_bitrate(A.probe(out)) <= 1.5 * source_rate  # previews never outgrow the source
+    podcast = _sine_m4a(tmp_path / "pod.m4a", seconds=6)
+    out = tmp_path / "p.uk.m4a"
+    A.mux(podcast, dub, out, srt=None, keep_original=True, clip=(2.0, 2.0))
+    assert abs(A.duration(out) - 2.0) < 0.15 and not A.has_stream(out, "video")
+
+
+def test_cleanup_part_compresses_stems(tmp_path):
+    import numpy as np
+
+    from uadub import audio as A
+    from uadub.stages import _cleanup_part
+
+    for name in ("audio.wav", "vocals.wav", "background.wav", "mix.wav"):
+        A.write(tmp_path / name, np.zeros((100, 2), np.float32), 44100)
+    _cleanup_part(tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["background.flac", "vocals.flac"]
+    A.write(tmp_path / "audio.wav", np.zeros((100, 2), np.float32), 44100)  # --no-separate part
+    for name in ("vocals.flac", "background.flac"):
+        (tmp_path / name).unlink()
+    _cleanup_part(tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["audio.flac"]
+
+
+def _speechy_db(total, frame=0.05):
+    import numpy as np
+
+    db = np.full(int(round(total / frame)), -20.0)
+    db[::5] = -65.0  # short gaps between words: sets the silence floor, never a 0.5 s pause
+    return db
+
+
+def test_part_minutes_for():
+    from uadub.parts import part_minutes_for
+
+    assert part_minutes_for(44 * 60, None) == 0 and part_minutes_for(46 * 60, None) == 15.0
+    assert part_minutes_for(20 * 60, 5) == 5 and part_minutes_for(20 * 60, 15) == 0
+    assert part_minutes_for(5 * 3600, 0) == 0
+
+
+def test_find_cuts_prefers_longest_pause_and_falls_back():
+    from uadub.parts import FRAME, find_cuts
+
+    total = 3600.0
+    db = _speechy_db(total)
+
+    def quiet(a, b):
+        db[int(round(a / FRAME)):int(round(b / FRAME))] = -70.0
+
+    quiet(800, 800.6)  # inside the first window but shorter
+    quiet(950, 952)  # the longest pause near 900 s
+    quiet(1700, 1701)  # inside the second window (951 + 900 ± 180)
+    cuts = find_cuts(db, total, 900.0)
+    # a word gap right after a pause may extend it by one 50 ms frame
+    assert abs(cuts[0]["time"] - 951.0) < 0.06 and abs(cuts[0]["pause"] - 2.0) < 0.06 and not cuts[0]["fallback"]
+    assert abs(cuts[1]["time"] - 1700.5) < 0.06 and not cuts[1]["fallback"]
+    assert len(cuts) == 3 and cuts[2]["fallback"]  # no pause near 2600 s: quietest window, flagged
+    assert abs(cuts[2]["time"] - 2600.5) < 1.0  # equal loudness everywhere → nearest the target
+
+
+def test_find_cuts_merges_a_short_tail():
+    from uadub.parts import find_cuts
+
+    assert len(find_cuts(_speechy_db(2000.0), 2000.0, 900.0)) == 1  # 900 + 1100, not 900 + 900 + 200
+    assert find_cuts(_speechy_db(1100.0), 1100.0, 900.0) == []
+
+
+def test_frame_db_pads_unknown_tail_with_nan(tmp_path):
+    import subprocess
+
+    import numpy as np
+
+    from uadub.parts import frame_db
+
+    src = tmp_path / "a.m4a"
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=440:sample_rate=48000:duration=3",
+                    "-af", "volume=enable='between(t,1,2)':volume=0", "-c:a", "aac", str(src)], check=True)
+    db = frame_db(src, 3.0)
+    assert len(db) == 60 and np.nanmax(db[24:36]) < np.nanmin(db[2:16]) - 30
+    longer = frame_db(src, 4.0)  # e.g. the decoder died early on a damaged track
+    assert len(longer) == 80 and np.isnan(longer[-15:]).all()
+
+
+def test_plan_is_sample_aligned_and_reused(tmp_path, monkeypatch):
+    from uadub import parts
+
+    calls = []
+
+    def fake_db(video, total, frame=parts.FRAME):
+        calls.append(1)
+        return _speechy_db(total, frame)
+
+    monkeypatch.setattr(parts, "frame_db", fake_db)
+    monkeypatch.setattr(parts.A, "duration", lambda p: 2000.123)
+    plan = parts.load_or_make_plan(tmp_path, tmp_path / "v.mp4", 15.0, 44100, log=lambda m: None)
+    assert len(plan["parts"]) == 2 and plan["parts"][-1]["end"] == 2000.123
+    assert plan["parts"][0]["end"] == plan["parts"][1]["start"]
+    assert all(abs(p["start"] * 44100 - round(p["start"] * 44100)) < 1e-6 for p in plan["parts"])
+    assert plan["parts"][-1]["pause"] is None and "частин" in parts.format_plan(plan)
+    parts.load_or_make_plan(tmp_path, tmp_path / "v.mp4", 15.0, 44100, log=lambda m: None)
+    assert len(calls) == 1  # same input and settings: plan reused, part caches stay valid
+    parts.load_or_make_plan(tmp_path, tmp_path / "v.mp4", 10.0, 44100, log=lambda m: None)
+    assert len(calls) == 2
+
+
+def test_frame_db_fails_when_nothing_decodes(tmp_path):
+    import pytest
+
+    from uadub.parts import frame_db
+
+    junk = tmp_path / "x.mp4"
+    junk.write_text("not media")
+    with pytest.raises(SystemExit) as e:
+        frame_db(junk, 3.0)
+    assert "x.mp4" in str(e.value)
+
+
+def test_corrupt_plan_json_is_replanned(tmp_path, monkeypatch):
+    from uadub import parts
+
+    monkeypatch.setattr(parts, "frame_db", lambda v, t, frame=parts.FRAME: _speechy_db(t, frame))
+    monkeypatch.setattr(parts.A, "duration", lambda p: 2000.0)
+    (tmp_path / "plan.json").write_text('{"input": "tru')
+    plan = parts.load_or_make_plan(tmp_path, tmp_path / "v.mp4", 15.0, 44100, log=lambda m: None)
+    assert len(plan["parts"]) == 2
+
+
+def test_long_brief_map_reduce_and_fallback():
+    import json as _json
+
+    from uadub import translate as T
+
+    units = [{"text": "a" * 100} for _ in range(30)]
+    chunks = T.chunk_units(units, limit=1000)
+    assert [len(c) for c in chunks] == [9, 9, 9, 3]
+
+    class FakeLLM:
+        def __init__(self, merge_ok):
+            self.merge_ok, self.briefs = merge_ok, 0
+
+        def chat(self, system, user, *, max_tokens=4096, temperature=0.3):
+            if system.startswith("You merge partial"):
+                return _json.dumps({"summary": "Усе відео.", "domain": "IT",
+                                    "glossary": [{"src": "deploy", "uk": "деплой"}]}) if self.merge_ok else "oops"
+            self.briefs += 1
+            return _json.dumps({
+                "summary": f"Частина {self.briefs}.", "domain": "IT", "address": "ви",
+                "speaker_gender": "female" if self.briefs == 2 else "male",
+                "glossary": [{"src": "deploy", "uk": "деплой" if self.briefs == 1 else "розгортання"},
+                             {"src": f"t{self.briefs}", "uk": "x"}],
+                "characters": [{"name": "Bob", "uk": "Боб", "gender": "male"}], "idioms": [], "asr_fixes": []})
+
+    llm = FakeLLM(True)
+    brief = T.long_brief(llm, units, limit=1000, log=lambda m: None)
+    assert llm.briefs == 4 and brief["summary"] == "Усе відео."
+    brief = T.long_brief(FakeLLM(False), units, limit=1000, log=lambda m: None)  # merge reply is broken
+    assert brief["speaker_gender"] == "male" and brief["address"] == "ви" and brief["domain"] == "IT"
+    assert [g["uk"] for g in brief["glossary"] if g["src"] == "deploy"] == ["деплой"]
+    assert len(brief["characters"]) == 1 and brief["summary"].startswith("Частина 1.")
+    single = T.long_brief(FakeLLM(True), units[:3], limit=1000, log=lambda m: None)
+    assert single["summary"] == "Частина 1."  # one chunk: no merge call
+    forced = T.long_brief(FakeLLM(False), units, domain="медицина", limit=1000, log=lambda m: None)
+    assert forced["domain"] == "медицина"
+
+    class CrashingMerge(FakeLLM):  # e.g. a ValueError or a timeout from the backend, not a RuntimeError
+        def chat(self, system, user, **kw):
+            if system.startswith("You merge partial"):
+                raise TimeoutError("backend stalled")
+            return super().chat(system, user, **kw)
+
+    logs = []
+    brief = T.long_brief(CrashingMerge(True), units, limit=1000, log=logs.append)
+    assert brief["address"] == "ви" and any("за правилами" in m for m in logs)
+    assert [m for m in logs if "шматок" in m] == [f"   • бриф: шматок {i}/4" for i in range(1, 5)]
+
+    class GreedyMerge(FakeLLM):  # the merge ignores the glossary limit
+        def chat(self, system, user, **kw):
+            if system.startswith("You merge partial"):
+                return _json.dumps({"summary": "S", "glossary": [{"src": f"t{i}", "uk": "x"} for i in range(60)]})
+            return super().chat(system, user, **kw)
+
+    assert len(T.long_brief(GreedyMerge(True), units, limit=1000, log=lambda m: None)["glossary"]) == 25
+    assert len(T.long_brief(GreedyMerge(True), units, domain="IT", limit=1000, log=lambda m: None)["glossary"]) == 40
+    from uadub.parts import brief_summary
+
+    assert brief_summary({"domain": "IT", "glossary": [{}, {}]}) == "   • бриф готовий: сфера «IT», термінів у глосарії: 2"
+
+
+def test_context_window_adds_edges():
+    from uadub.translate import _context_window
+
+    units = [{"text": f"line {i}"} for i in range(3)]
+    assert _context_window(units, 0, 3) == "» line 0\n» line 1\n» line 2"
+    text = _context_window(units, 0, 3, {"before": "PREV", "after": "NEXT"})
+    assert text.startswith("PREV\n") and text.endswith("\nNEXT")
+
+
+def test_translate_units_uses_shared_brief_and_edges():
+    import json as _json
+
+    from uadub.translate import translate_units
+
+    seen = []
+
+    class FakeLLM:
+        def chat(self, system, user, *, max_tokens=4096, temperature=0.3):
+            seen.append((system, user))
+            if system.startswith("You are an expert audiovisual translator"):
+                ids = [l["id"] for l in _json.loads(user)["lines"]]
+                return _json.dumps({"lines": [{"id": i, "uk": "Робимо деплой."} for i in ids]})
+            return _json.dumps({"lines": []})
+
+    units = [{"id": 1, "text": "Let's deploy.", "start": 0.0, "end": 2.0, "slot_end": 2.0}]
+    translate_units(FakeLLM(), units, rate=6.0, gender="male", glossary_path=None, stress="off",
+                    shared_brief={"summary": "S", "glossary": [{"src": "deploy", "uk": "деплой"}]},
+                    edge={"before": "PREVIOUS PART", "after": ""}, log=lambda m: None)
+    assert not any(s.startswith("You prepare a translation brief") for s, _ in seen)
+    system, user = next(x for x in seen if x[0].startswith("You are an expert audiovisual translator"))
+    assert "deploy → деплой" in system and "PREVIOUS PART" in user
+
+
+def test_assemble_concatenates_parts_in_sync(tmp_path):
+    import json as _json
+    import subprocess
+
+    import numpy as np
+
+    from uadub import audio as A
+    from uadub.parts import assemble
+
+    video = _test_video(tmp_path / "v.mp4", seconds=6)
+    items = []
+    for n, (start, end) in enumerate([(0.0, 2.5), (2.5, 6.0)], 1):
+        w = tmp_path / f"p{n}"
+        w.mkdir()
+        A.write_flac(w / "dub.flac", np.full((round((end - start) * 44100), 2), 0.1, np.float32), 44100)
+        (w / "units.json").write_text(_json.dumps(
+            [{"id": 1, "start": 0.5, "end": 1.5, "slot_end": 2.0, "text": f"Hi {n}", "uk": f"Привіт {n}"}]))
+        items.append((w, start))
+    out = tmp_path / "v.uk.mp4"
+    assemble(video, items, out, tmp_path / "master", src_lang="en", keep_original=True)
+    assert abs(A.duration(out) - 6.0) < 0.1 and A.has_stream(out, "video")
+    a = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration",
+                        "-of", "csv=p=0", str(out)], capture_output=True, text=True).stdout
+    assert abs(float(a) - 6.0) < 0.06
+    srt = out.with_suffix(".srt").read_text(encoding="utf-8")
+    assert "00:00:03,000" in srt and "Привіт 2" in srt  # second part's line shifted by 2.5 s
+    units = _json.loads((tmp_path / "master" / "units.json").read_text())
+    assert [u["id"] for u in units] == [1, 2] and units[1]["start"] == 3.0
+
+
+def _long_fixture(tmp_path, monkeypatch, fail):
+    import json as _json
+
+    from uadub import cli, parts
+    from uadub.config import Options
+
+    opt = Options(input=str(tmp_path / "long.mp4"), output=str(tmp_path / "long.uk.mp4"),
+                  workdir=str(tmp_path / "long.uadub"), voice="st")
+    plan = {"duration": 30.0, "sample_rate": 44100, "part_minutes": 0.2, "parts": [
+        {"n": 1, "start": 0.0, "end": 10.0, "pause": 1.0, "fallback": False},
+        {"n": 2, "start": 10.0, "end": 20.0, "pause": 0.8, "fallback": False},
+        {"n": 3, "start": 20.0, "end": 30.0, "pause": None, "fallback": False}]}
+    calls, assembled = [], []
+
+    def fake_run(po, *, redo=None, stop_after=None, review=False, review_with=None, text=False,
+                 prefix="", summary=True):
+        n = int(po.work.name)
+        calls.append((n, stop_after, po.shared_brief, po.loudness_target))
+        po.work.mkdir(parents=True, exist_ok=True)
+        (po.work / "transcript.json").write_text(_json.dumps([{"start": 0, "end": 1, "text": f"part {n}"}]))
+        (po.work / "meta.json").write_text(_json.dumps({"duration": 10.0}))
+        if stop_after == "asr":
+            return
+        if n in fail:
+            raise SystemExit("\nЕтап «tts» завершився з помилкою (код 1).")
+        if not (po.work / "dub.flac").exists():
+            (po.work / "dub.flac").write_bytes(b"x")
+            (po.work / "units.json").write_text("[]")
+
+    def fake_assemble(video, items, out, master, **kw):
+        assembled.append([n for n, _ in enumerate(items, 1)])
+        Path(out).write_bytes(b"video")
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    monkeypatch.setattr(parts, "build_shared_brief",
+                        lambda master, works: (master / "long_brief.json").write_text("{}"))
+    monkeypatch.setattr(parts, "speech_loudness", lambda w, sr: -20.0)
+    monkeypatch.setattr(parts, "assemble", fake_assemble)
+    return opt, plan, calls, assembled
+
+
+def test_run_long_isolates_failures_and_resumes(tmp_path, monkeypatch):
+    import pytest
+
+    from uadub import parts
+
+    fail = {2}
+    opt, plan, calls, assembled = _long_fixture(tmp_path, monkeypatch, fail)
+    with pytest.raises(SystemExit) as e:
+        parts.run_long(opt, plan)
+    assert "02" in str(e.value) and not assembled
+    assert [c[0] for c in calls if c[1] == "asr"] == [1, 2, 3]  # phase 1 for all parts first
+    phase3 = [c for c in calls if c[1] is None]
+    assert [c[0] for c in phase3] == [1, 2, 3]  # part 3 still made after part 2 failed
+    assert all(c[2] and c[2].endswith("long_brief.json") and c[3] == -20.0 for c in phase3)
+    assert (tmp_path / "long.uadub" / "edge" / "02.json").exists()
+    import json as _json
+
+    state = _json.loads((tmp_path / "long.uadub" / "state.json").read_text())
+    assert list(state["failed"]) == ["2"] and "tts" in state["failed"]["2"]
+    fail.clear()
+    calls.clear()
+    parts.run_long(opt, plan)
+    assert assembled == [[1, 2, 3]]
+    assert not _json.loads((tmp_path / "long.uadub" / "state.json").read_text())["failed"]
+
+
+def test_run_long_reassembles_when_a_part_changes(tmp_path, monkeypatch):
+    import os
+
+    from uadub import parts
+
+    opt, plan, calls, assembled = _long_fixture(tmp_path, monkeypatch, set())
+    parts.run_long(opt, plan)
+    parts.run_long(opt, plan)
+    assert len(assembled) == 1  # nothing changed: no second assembly
+    dub = tmp_path / "long.uadub" / "parts" / "02" / "dub.flac"
+    dub.write_bytes(b"re-dubbed after a review.md edit")
+    os.utime(dub, ns=(dub.stat().st_atime_ns, dub.stat().st_mtime_ns + 10**9))
+    parts.run_long(opt, plan)
+    assert len(assembled) == 2
+    assert not (tmp_path / "long.uk.parts").exists()  # previews removed without --keep-parts
+
+
+def test_run_long_reassembles_when_keep_original_changes(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from uadub import parts
+
+    opt, plan, calls, assembled = _long_fixture(tmp_path, monkeypatch, set())
+    parts.run_long(opt, plan)
+    parts.run_long(replace(opt, keep_original=not opt.keep_original), plan)
+    assert len(assembled) == 2
+
+
+def test_run_long_user_stop_ends_the_run(tmp_path, monkeypatch):
+    import pytest
+
+    from uadub import cli, parts
+
+    opt, plan, calls, assembled = _long_fixture(tmp_path, monkeypatch, set())
+
+    def stopper(po, **kw):
+        calls.append(int(po.work.name))
+        raise cli.UserStop("Зупинено.")
+
+    monkeypatch.setattr(cli, "run_pipeline", stopper)
+    with pytest.raises(cli.UserStop):
+        parts.run_long(opt, plan)
+    assert calls == [1]
+
+
+def test_run_long_loudness_failure_is_a_part_failure_and_early_stop(tmp_path, monkeypatch):
+    import pytest
+
+    from uadub import parts
+
+    opt, plan, calls, assembled = _long_fixture(tmp_path, monkeypatch, set())
+
+    def bad(w, sr):
+        if w.name == "02":
+            raise RuntimeError("broken stems")
+        return -20.0
+
+    monkeypatch.setattr(parts, "speech_loudness", bad)
+    with pytest.raises(SystemExit) as e:
+        parts.run_long(opt, plan)
+    assert "02" in str(e.value) and "broken stems" in str(e.value)
+    calls.clear()
+    monkeypatch.setattr(parts, "speech_loudness", lambda w, sr: -20.0)
+    parts.run_long(opt, plan, stop_after="extract")
+    assert {c[1] for c in calls} == {"extract"}
+
+
+def test_no_separate_after_part_cleanup_extracts_audio_again(tmp_path):
+    import numpy as np
+
+    from uadub import audio as A
+    from uadub.config import Options
+    from uadub.stages import _cleanup_part, stage_separate
+
+    src = _sine_m4a(tmp_path / "src.m4a")
+    w = tmp_path / "part"
+    w.mkdir()
+    for name in ("audio.wav", "vocals.wav", "background.wav", "mix.wav"):
+        A.write(w / name, np.zeros((100, 2), np.float32), 44100)
+    _cleanup_part(w)  # separated part: audio.wav is gone, stems are FLAC
+    assert not A.existing(w / "audio.wav").exists()
+    opt = Options(input=str(src), output=str(tmp_path / "o.m4a"), workdir=str(w), separate=False,
+                  clip_start=1.0, clip_end=2.5)
+    stage_separate(opt)  # the user reruns the part with --no-separate
+    assert (w / "audio.wav").exists() and not A.existing(w / "vocals.wav").exists()
+    assert A.read(w / "audio.wav")[0].shape == (66150, 2)
+
+
+def test_damaged_part_goes_on_but_whole_file_stops(tmp_path, monkeypatch):
+    import subprocess
+
+    import numpy as np
+    import pytest
+    import soundfile as sf
+
+    from uadub import audio as A
+
+    def fake_run(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 1, "", f"{A._DECODE_ERROR}\n" * 3)
+
+    monkeypatch.setattr(A.subprocess, "run", fake_run)
+    monkeypatch.setattr(A, "_salvage_audio",
+                        lambda v, sr, start=0.0, length=None: (np.zeros((round((length or 3.0) * sr), 2), np.float32), 7))
+    A.extract_audio(tmp_path / "v.mp4", tmp_path / "part.wav", 1000, start=5.0, length=2.0)
+    assert sf.info(str(tmp_path / "part.wav")).frames == 2000  # a silent part, the long run goes on
+    with pytest.raises(SystemExit):
+        A.extract_audio(tmp_path / "v.mp4", tmp_path / "whole.wav", 1000)
+
+
+def test_choose_part_minutes_keeps_whole_runs_and_subs(tmp_path):
+    import json as _json
+
+    import pytest
+
+    from uadub.config import Options
+    from uadub.parts import choose_part_minutes
+
+    notes = []
+    base = dict(input="v.mp4", output="v.uk.mp4", workdir=str(tmp_path / "w"))
+    long = 60 * 60
+    assert choose_part_minutes(Options(**base), long, log=notes.append) == 15.0 and not notes
+    assert choose_part_minutes(Options(**base), 30 * 60, log=notes.append) == 0
+    # --subs: automatic split falls back to the whole pipeline; an explicit split is an error
+    assert choose_part_minutes(Options(**base, subs="v.srt"), long, log=notes.append) == 0
+    assert len(notes) == 1 and "--subs" in notes[0]
+    with pytest.raises(SystemExit):
+        choose_part_minutes(Options(**base, subs="v.srt", part_minutes=10), long, log=notes.append)
+    # a work folder of an earlier whole run stays whole (its caches are kept)
+    (tmp_path / "w").mkdir()
+    (tmp_path / "w" / "state.json").write_text(_json.dumps({"extract": {}, "separate": {}}))
+    notes.clear()
+    assert choose_part_minutes(Options(**base), long, log=notes.append) == 0
+    assert len(notes) == 1 and "--part-minutes 15" in notes[0]
+    assert choose_part_minutes(Options(**base, part_minutes=15), long, log=notes.append) == 15.0
+    (tmp_path / "w" / "plan.json").write_text("{}")  # an earlier long run: stays in part mode
+    assert choose_part_minutes(Options(**base), long, log=notes.append) == 15.0
+
+
+def test_parts_word_plural():
+    from uadub.parts import parts_word
+
+    assert [parts_word(n) for n in (1, 2, 4, 5, 11, 12, 14, 21, 22, 25, 111)] == [
+        "1 частина", "2 частини", "4 частини", "5 частин", "11 частин", "12 частин", "14 частин",
+        "21 частина", "22 частини", "25 частин", "111 частин"]
+
+
+def test_non_object_plan_json_is_replanned(tmp_path, monkeypatch):
+    from uadub import parts
+
+    monkeypatch.setattr(parts, "frame_db", lambda v, t, frame=parts.FRAME: _speechy_db(t, frame))
+    monkeypatch.setattr(parts.A, "duration", lambda p: 2000.0)
+    (tmp_path / "plan.json").write_text("[1, 2]")
+    plan = parts.load_or_make_plan(tmp_path, tmp_path / "v.mp4", 15.0, 44100, log=lambda m: None)
+    assert len(plan["parts"]) == 2 and "2 частини" in parts.format_plan(plan)
+
+
+def test_run_long_stop_after_mux_assembles(tmp_path, monkeypatch):
+    from uadub import parts
+
+    opt, plan, calls, assembled = _long_fixture(tmp_path, monkeypatch, set())
+    parts.run_long(opt, plan, stop_after="mux")
+    assert assembled == [[1, 2, 3]]
+
+
+def test_run_long_remakes_a_missing_part_dub(tmp_path, monkeypatch):
+    from uadub import parts
+
+    opt, plan, calls, assembled = _long_fixture(tmp_path, monkeypatch, set())
+    parts.run_long(opt, plan)
+    from uadub import cli
+
+    redos = []
+    fake = cli.run_pipeline
+    real_dub = tmp_path / "long.uadub" / "parts" / "02" / "dub.flac"
+
+    def no_dub(po, **kw):  # phase 3 sees the state "done" and does not recreate the file
+        redos.append((int(po.work.name), kw.get("redo")))
+        if kw.get("redo") == "mix":
+            fake(po, **kw)
+
+    monkeypatch.setattr(cli, "run_pipeline", no_dub)
+    real_dub.unlink()
+    parts.run_long(opt, plan)
+    assert (2, "mix") in redos and real_dub.exists() and len(assembled) == 2
+
+
+def test_brief_child_reports_progress(tmp_path, monkeypatch, capsys):
+    import json as _json
+
+    from uadub import llm as L
+    from uadub import parts
+    from uadub.config import Options
+
+    class FakeLLM:
+        def chat(self, system, user, **kw):
+            return _json.dumps({"summary": "S", "domain": "IT", "glossary": [{"src": "a", "uk": "б"}]})
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(L, "make_llm", lambda spec: FakeLLM())
+    Options(input="v.mp4", output="v.uk.mp4", workdir=str(tmp_path)).save(tmp_path / "options.json")
+    w = tmp_path / "parts" / "01"
+    w.mkdir(parents=True)
+    (w / "transcript.json").write_text(_json.dumps([{"text": "Hello."}]))
+    parts._brief_child(str(tmp_path), [str(w)])
+    out = [line for line in capsys.readouterr().out.splitlines()]
+    assert all(line.strip() for line in out)  # no stray blank lines
+    assert "   • бриф: шматок 1/1" in out and out[-1] == "   • бриф готовий: сфера «IT», термінів у глосарії: 1"
+    assert _json.loads((tmp_path / "long_brief.json").read_text())["domain"] == "IT"

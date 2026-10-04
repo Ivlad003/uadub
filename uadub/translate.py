@@ -33,31 +33,47 @@ Rules:
 2. Timing: every line has "max_syl" — the maximum number of Ukrainian syllables (vowel letters а е є и і ї о у ю я) that fits the original time slot. Translate the full meaning and use the available length: a good line is usually close to max_syl. Only if a faithful translation is longer, condense it just enough: drop filler words and repetitions, use shorter synonyms, simplify syntax — never drop facts, names, numbers or instructions. Never pad short lines.
 3. Style: clear, spoken and pleasant to listen to; keep the tone (casual, formal, humorous). Use correct literary Ukrainian, no Russianisms, surzhyk or word-for-word calques. Keep a consistent form of address (ти/ви).
 4. {gender_rule}
-5. No anglicisms. Translate everything that has a Ukrainian word: UI labels, button and menu names, settings and ordinary technical terms (e.g. "Use this model" → «Використати цю модель», "browse" → «переглянути», "download" → «завантажити», "quantization" → «квантування», "checkbox" → «прапорець», "runtime" → «середовище виконання», "default" → «стандартний»). Never leave English phrases untranslated and never write English words in Cyrillic letters (no «юз зіс модел», «брауз», «квантайзейшн», «чекбокс», «дефолтний», «юзати»). Keep in Latin only proper names: products, companies, people, model names, file formats, code and commands (LM Studio, Hugging Face, Qwen, GGUF, MLX).
+5. {terms_rule}
 6. If "uk" contains digits, symbols (% $ € + / & @ °), Latin letters or abbreviations, also add "tts": the same line fully spelled out exactly as it should be pronounced in Ukrainian — numbers as words in the correct case and gender, symbols and units expanded, proper names in Cyrillic the way Ukrainian speakers say them (e.g. "GitHub" → "ґітхаб", "LM Studio" → "ел-ем студіо", "Hugging Face" → "хаґінґ фейс", "API" → "ей-пі-ай", "3.5%" → "три з половиною відсотка"). "tts" must contain only Cyrillic words and punctuation — no Latin letters, digits or stress marks. Otherwise omit "tts".
 7. Do not add stress marks (´, +) anywhere — stress is handled separately.
 {lang_rules}{glossary}
 Return ONLY a JSON object: {{"lines": [{{"id": <int>, "uk": "<subtitle text>", "tts": "<optional speakable text>"}}]}}
 Each line object has only "id", "uk" and optionally "tts" — never repeat "src", "max_syl", "speaker" or other input fields."""
 
+PLAIN_TERMS_RULE = """No anglicisms. Translate everything that has a Ukrainian word: UI labels, button and menu names, settings and ordinary technical terms (e.g. "Use this model" → «Використати цю модель», "browse" → «переглянути», "download" → «завантажити», "quantization" → «квантування», "checkbox" → «прапорець», "runtime" → «середовище виконання», "default" → «стандартний»). Never leave English phrases untranslated and never write English words in Cyrillic letters (no «юз зіс модел», «брауз», «квантайзейшн», «чекбокс», «дефолтний», «юзати»). Keep in Latin only proper names: products, companies, people, model names, file formats, code and commands (LM Studio, Hugging Face, Qwen, GGUF, MLX)."""
+
+DOMAIN_TERMS_RULE = """Audience: specialists in {domain}. Use the terminology Ukrainian professionals in this field actually use when they talk, including established anglicisms (e.g. in software: фреймворк, деплой, коміт, пул-реквест, бекенд, реліз, промпт) — prefer them to artificial native coinages nobody says. Where the established term is native, use it (database → база даних, quantization → квантування). Still no slang or ad-hoc transliterations of ordinary words (no «юзати», «дефолтний», «юз зіс модел»), and never leave whole English phrases untranslated. Labels of buttons, menus and settings that the viewer sees on screen stay exactly as in the original, in Latin and in quotes (натисніть «Use this model»), so viewers can find them. Keep proper names in Latin (LM Studio, Hugging Face, Qwen, GGUF, MLX)."""
+
 BRIEF_SYSTEM = """You prepare a translation brief for dubbing a {src_name} video into Ukrainian.
 Read the whole transcript (it comes from speech recognition and may contain misheard words), understand the speaker's line of thought, and return ONLY JSON:
 {"summary": "<3-5 sentences in Ukrainian: topic, genre, audience, tone, and the main line of argument or story>",
+ "domain": "<field of the video in Ukrainian, 1-4 words: «IT / розробка ПЗ», «медицина», «фінанси», «кулінарія», «загальна тема» …>",
  "speaker_gender": "male|female|unknown",
  "address": "ти|ви",
  "characters": [{"name": "<name as written in the transcript>", "uk": "<Ukrainian form>", "gender": "male|female|unknown"}],
  "glossary": [{"src": "<term/name/recurring phrase>", "uk": "<recommended Ukrainian rendering; keep brand names as is>"}],
  "idioms": [{"src": "<idiom, proverb, set phrase, joke or cultural reference as it appears>", "uk": "<Ukrainian equivalent with the same meaning and register, not a literal translation>"}],
  "asr_fixes": [{"heard": "<misrecognised word in the transcript>", "meant": "<what was actually said>"}]}
-Include at most 25 glossary entries, only for terms that really matter for consistency. For technical terms give the established Ukrainian term (quantization → квантування), never a Cyrillic transliteration of the English word; keep proper names (products, companies) as they are. List named characters (people) in "characters"; empty list if none. List every idiom or figure of speech in "idioms" (empty list if none) and obvious speech-recognition errors in "asr_fixes".{lang_rules}"""
+{glossary_rule} List named characters (people) in "characters"; empty list if none. List every idiom or figure of speech in "idioms" (empty list if none) and obvious speech-recognition errors in "asr_fixes".{lang_rules}"""
 
 STRESS_SYSTEM = """You are a Ukrainian pronunciation expert. Each item is a word inside a sentence that will be read aloud. The word is a homograph: its stress depends on its meaning or grammatical form. Pick the variant whose stressed vowel (shown in UPPERCASE) is correct in this sentence. Examples: зАмок = castle, замОк = lock; Атлас = book of maps, атлАс = fabric; мУка = torment, мукА = flour; рУки = nominative plural (мої рУки), рукИ = genitive singular (немає рукИ); гОри = mountains, з горИ = from the mountain.
 If both variants are acceptable in this sentence (free variation, e.g. нАтискати/натискАти), answer "both" — then nothing is marked.
 Return ONLY JSON: {"items": [{"id": "<id>", "answer": "<the correct variant, copied exactly, or both>"}]}"""
 
-ANGLICISM_SYSTEM = """You are a Ukrainian editor of dubbing scripts. In each line the listed "suspect" words look like English words written in Cyrillic letters, untranslated English, or non-standard slang. Rewrite "uk" in natural standard Ukrainian: replace such words with proper Ukrainian equivalents (button and menu labels are translated by meaning). Keep proper names of products, companies, people and file formats (LM Studio, Hugging Face, GGUF) unchanged. If a suspect word is in fact a correct Ukrainian word or a proper name, keep it. Keep the meaning and roughly the same length.
+ANGLICISM_SYSTEM = """You are a Ukrainian editor of dubbing scripts. In each line the listed "suspect" words look like English words written in Cyrillic letters, untranslated English, or non-standard slang. {fix_rule} Keep proper names of products, companies, people and file formats (LM Studio, Hugging Face, GGUF) unchanged. If a suspect word is in fact a correct Ukrainian word or a proper name, keep it. Keep the meaning and roughly the same length.
 Follow the same "tts" rule: if the new "uk" has digits, symbols, Latin letters or abbreviations, add "tts" with everything spelled out as pronounced in Ukrainian; otherwise omit it.
 Return ONLY JSON: {"lines": [{"id": <int>, "uk": "...", "tts": "..."}]}"""
+
+PLAIN_GLOSSARY_RULE = "Include at most 25 glossary entries, only for terms that really matter for consistency. For technical terms give the established Ukrainian term (quantization → квантування), never a Cyrillic transliteration of the English word; keep proper names (products, companies) as they are."
+
+DOMAIN_GLOSSARY_RULE = "The translation is for specialists in {domain}. Include at most 40 glossary entries: the terms that matter for consistency and the professional jargon of this field, rendered the way Ukrainian specialists actually say them in speech — an established anglicism when that is what they say (framework → фреймворк, deploy → деплой, pull request → пул-реквест), a native term when that is the established one (database → база даних); keep proper names (products, companies) as they are."
+
+PLAIN_FIX_RULE = "Rewrite \"uk\" in natural standard Ukrainian: replace such words with proper Ukrainian equivalents (button and menu labels are translated by meaning)."
+
+DOMAIN_FIX_RULE = "The audience are specialists in {domain}. Rewrite \"uk\" only where a suspect word is something these specialists would not say: slang, an ad-hoc transliteration of an ordinary word (юзати, дефолтний) or an untranslated English phrase. Keep established professional terms of this field (e.g. фреймворк, деплой, коміт) and on-screen button or menu labels quoted in Latin (натисніть «Use this model»)."
+
+SPELL_SYSTEM = """You prepare Ukrainian dubbing lines for a speech synthesizer that can read only Cyrillic. For each line write "tts": the same "uk" text spelled out exactly as a Ukrainian speaker would say it aloud — Latin words, UI labels, product names and abbreviations in Cyrillic the way Ukrainian specialists pronounce them ("Use this model" → «юз зіс модел», "LM Studio" → «ел-ем студіо», "API" → «ей-пі-ай»), numbers and symbols as words in the correct case. Change nothing else in the line and keep its capital letters. "tts" must contain only Cyrillic words and punctuation — no Latin letters, digits or stress marks.
+Return ONLY JSON: {"lines": [{"id": <int>, "tts": "..."}]}"""
 
 SHORTEN_SYSTEM = """You edit Ukrainian dubbing lines that are too long for their time slots.
 For each line rewrite "uk" so that it has at most "max_syl" syllables (vowel letters а е є и і ї о у ю я), keeping the meaning of "src" and a natural spoken style. Prefer cutting fillers, shorter synonyms and simpler syntax; a short Ukrainian idiom often says more than a long literal phrase. The result must stay a grammatical, complete Ukrainian sentence — never leave half of a set phrase (wrong: «Коли справа стає завантаження»; right: «Коли йдеться про завантаження»).
@@ -181,18 +197,118 @@ def _syl(u: dict) -> int:
     return syllables(speech_text(u))
 
 
-def make_brief(llm: LLM, units: list[dict], src_name: str = "English", lang_rules: str = "") -> dict:
+def make_brief(llm: LLM, units: list[dict], src_name: str = "English", lang_rules: str = "",
+               domain: str | None = None) -> dict:
+    """domain: None — plain mode; "auto" — specialist mode, field detected here; else the given field."""
     transcript = "\n".join(u["text"] for u in units)
     if len(transcript) > BRIEF_CHAR_LIMIT:
         half = BRIEF_CHAR_LIMIT // 2
         transcript = transcript[:half] + "\n…\n" + transcript[-half:]
     try:
-        system = BRIEF_SYSTEM.replace("{src_name}", src_name).replace("{lang_rules}", lang_rules)
+        system = brief_system(src_name, lang_rules, domain)
         brief = _ask(llm, system, transcript, max_tokens=2000)
         return brief if isinstance(brief, dict) else {}
     except Exception as e:  # the brief is helpful, not essential
         print(f"   (бриф не вдався: {e})")
         return {}
+
+
+MERGE_BRIEF_SYSTEM = """You merge partial translation briefs of consecutive parts of one long {src_name} video into one brief for dubbing the whole video into Ukrainian.
+Return ONLY JSON with the same fields as the parts: "summary" (3-6 sentences in Ukrainian about the whole video), "domain", "speaker_gender", "address", "characters", "glossary", "idioms", "asr_fixes".
+Keep one Ukrainian rendering per glossary term (the most fitting one) and at most {max_glossary} glossary entries: the terms that matter most for consistency across the whole video. Merge characters by name. Keep every idiom and speech-recognition fix."""
+
+
+def chunk_units(units: list[dict], limit: int = BRIEF_CHAR_LIMIT) -> list[list[dict]]:
+    """Consecutive groups whose joined text fits one brief request."""
+    chunks: list[list[dict]] = [[]]
+    size = 0
+    for u in units:
+        n = len(u["text"]) + 1
+        if chunks[-1] and size + n > limit:
+            chunks.append([])
+            size = 0
+        chunks[-1].append(u)
+        size += n
+    return [c for c in chunks if c]
+
+
+def merge_briefs_fallback(briefs: list[dict], max_glossary: int = 25) -> dict:
+    """Deterministic merge when the LLM merge fails: first rendering wins, majority votes."""
+    from collections import Counter
+
+    out: dict = {"summary": " ".join(str(b.get("summary", "")).strip() for b in briefs if b.get("summary")).strip()}
+    for key in ("speaker_gender", "address", "domain"):
+        votes = [b.get(key) for b in briefs if b.get(key) and b.get(key) != "unknown"]
+        if votes:
+            out[key] = Counter(votes).most_common(1)[0][0]
+
+    def unique(field: str, key: str, cap: int | None = None) -> list[dict]:
+        seen: dict[str, dict] = {}
+        for b in briefs:
+            for item in b.get(field) or []:
+                if isinstance(item, dict) and item.get(key):
+                    seen.setdefault(str(item[key]).lower(), item)
+        items = list(seen.values())
+        return items[:cap] if cap else items
+
+    out["glossary"] = unique("glossary", "src", max_glossary)
+    out["characters"] = unique("characters", "name")
+    out["idioms"] = unique("idioms", "src")
+    out["asr_fixes"] = unique("asr_fixes", "heard")
+    return out
+
+
+def long_brief(llm: LLM, units: list[dict], src_name: str = "English", lang_rules: str = "",
+               domain: str | None = None, *, limit: int = BRIEF_CHAR_LIMIT, log=print) -> dict:
+    """Brief of a whole long video: one brief per chunk of text, then one merge (ADR-027)."""
+    chunks = chunk_units(units, limit)
+    if len(chunks) <= 1:
+        log("   • бриф: шматок 1/1")
+        return make_brief(llm, units, src_name, lang_rules, domain)
+    briefs = []
+    for i, chunk in enumerate(chunks, 1):
+        log(f"   • бриф: шматок {i}/{len(chunks)}")
+        b = make_brief(llm, chunk, src_name, lang_rules, domain)
+        if b:
+            briefs.append(b)
+    max_glossary = 40 if domain else 25
+    merged: dict = {}
+    if briefs:
+        log("   • зводжу бриф у один")
+        system = MERGE_BRIEF_SYSTEM.replace("{src_name}", src_name).replace("{max_glossary}", str(max_glossary))
+        try:
+            merged = _ask(llm, system, json.dumps({"parts": briefs}, ensure_ascii=False), max_tokens=3000)
+        except Exception:  # any failure of the merge request: the rule-based merge below
+            merged = {}
+        if not isinstance(merged, dict) or not isinstance(merged.get("glossary"), list):
+            log("   (зведення через LLM не вдалося — зводжу за правилами)")
+            merged = merge_briefs_fallback(briefs, max_glossary)
+        merged["glossary"] = merged["glossary"][:max_glossary]  # the model may ignore the limit
+    if domain and domain != "auto":
+        merged["domain"] = domain
+    return merged
+
+
+def _field(domain: str) -> str:
+    return "the field of this video (see \"domain\")" if domain == "auto" else domain
+
+
+def brief_system(src_name: str, lang_rules: str, domain: str | None) -> str:
+    rule = PLAIN_GLOSSARY_RULE if not domain else DOMAIN_GLOSSARY_RULE.replace("{domain}", _field(domain))
+    if domain and domain != "auto":
+        rule += f" The field is given by the user: «{domain}» — put it in \"domain\"."
+    return (BRIEF_SYSTEM.replace("{src_name}", src_name).replace("{glossary_rule}", rule)
+            .replace("{lang_rules}", lang_rules))
+
+
+def terms_rule(domain: str | None) -> str:
+    """Rule 5 of the translation prompt: plain Ukrainian, or the jargon of the given field."""
+    return DOMAIN_TERMS_RULE.replace("{domain}", domain) if domain else PLAIN_TERMS_RULE
+
+
+def anglicism_system(domain: str | None) -> str:
+    rule = DOMAIN_FIX_RULE.replace("{domain}", domain) if domain else PLAIN_FIX_RULE
+    return ANGLICISM_SYSTEM.replace("{fix_rule}", rule)
 
 
 def set_budgets(units: list[dict], *, rate: float, max_speed: float = 1.25) -> None:
@@ -205,15 +321,27 @@ def set_budgets(units: list[dict], *, rate: float, max_speed: float = 1.25) -> N
 
 def translate_units(llm: LLM, units: list[dict], *, rate: float, gender: str | None,
                     glossary_path: str | None, max_speed: float = 1.25, stress: str = "auto",
-                    source_lang: str = "en", log=print) -> dict:
+                    source_lang: str = "en", domain: str | None = None, shared_brief: dict | None = None,
+                    edge: dict | None = None, log=print) -> dict:
+    """domain: None — plain Ukrainian for everyone; "auto" or a field name — specialist jargon of that field."""
     from .config import LANGS
 
     src_name = LANGS.get(source_lang, (None, source_lang))[1]
     lang_rules = LANG_RULES.get(source_lang, "")
     set_budgets(units, rate=rate, max_speed=max_speed)
 
-    log("   • аналіз тексту (тема, тон, глосарій)…")
-    brief = make_brief(llm, units, src_name, lang_rules)
+    if shared_brief is not None:  # a part of a long video: one brief for the whole video
+        log("   • спільний бриф довгого відео")
+        brief = shared_brief
+    else:
+        log("   • аналіз тексту (тема, тон, глосарій)…")
+        brief = make_brief(llm, units, src_name, lang_rules, domain)
+    field = str(brief.get("domain") or "").strip()
+    if domain and domain != "auto":
+        field = domain
+    if field:
+        log(f"   • сфера: {field}" + (" (фаховий переклад)" if domain else ""))
+    expert = (field or "the field of this video") if domain else None
     if not gender and brief.get("speaker_gender") in ("male", "female"):
         gender = brief["speaker_gender"]
     glossary = (brief.get("glossary") or []) + _load_glossary(glossary_path)
@@ -235,15 +363,17 @@ def translate_units(llm: LLM, units: list[dict], *, rate: float, gender: str | N
         gl_text += "\nCharacters (name → Ukrainian form, gender):\n" + "\n".join(
             f'- {c["name"]} → {c.get("uk") or c["name"]} ({c.get("gender", "unknown")})' for c in chars)
     system = SYSTEM.format(gender_rule=_gender_rule(gender), glossary=gl_text, src_name=src_name,
-                           lang_rules=lang_rules)
-    context = {k: brief[k] for k in ("summary", "address") if brief.get(k)}  # + transcript window per chunk
+                           lang_rules=lang_rules, terms_rule=terms_rule(expert))
+    context = {k: brief[k] for k in ("summary", "address") if brief.get(k)}
+    if expert:
+        context["domain"] = expert  # + transcript window per chunk
 
     by_id = {u["id"]: u for u in units}
     n_chunks = math.ceil(len(units) / CHUNK)
     for ci in range(n_chunks):
         chunk = units[ci * CHUNK : (ci + 1) * CHUNK]
         log(f"   • переклад {ci + 1}/{n_chunks}")
-        _translate_chunk(llm, system, context, units, chunk, by_id, fixed_gender=gender)
+        _translate_chunk(llm, system, context, units, chunk, by_id, fixed_gender=gender, edge=edge)
 
     for round_no in (1, 2):
         too_long = [u for u in units if u.get("uk") and _syl(u) > u["max_syl"] * 1.08]
@@ -253,9 +383,12 @@ def translate_units(llm: LLM, units: list[dict], *, rate: float, gender: str | N
         for i in range(0, len(too_long), CHUNK):
             _shorten(llm, too_long[i : i + CHUNK])
 
-    fixed = fix_anglicisms(llm, units, glossary=glossary, log=log)
+    fixed = fix_anglicisms(llm, units, glossary=glossary, domain=expert, log=log)
+    if expert:  # many on-screen labels stay in Latin: make sure each is spelled for the voice
+        spell_latin(llm, units, log=log)
     stats = resolve_homographs(llm, units, log=log) if stress == "auto" else {}
-    return {"brief": brief, "gender": gender, "homographs": stats, "anglicism_fixes": fixed}
+    return {"brief": brief, "gender": gender, "homographs": stats, "anglicism_fixes": fixed,
+            "domain": field or None, "domain_mode": bool(domain)}
 
 
 _LAT_WORD = re.compile(r"[A-Za-z][A-Za-z'-]*")
@@ -276,6 +409,34 @@ def find_suspects(u: dict, known, keep: set[str]) -> list[str]:
     return sorted(set(out))
 
 
+def spell_latin(llm: LLM, units: list[dict], *, log=print) -> int:
+    """Ask for a Cyrillic "tts" spelling of lines that still have Latin letters and none yet;
+    the letter-by-letter fallback would read «Use this model» as «асе тіс модел»."""
+    todo = [u for u in units if u.get("uk") and not u.get("tts") and _LAT_WORD.search(u["uk"])]
+    if not todo:
+        return 0
+    log(f"   • вимова латиниці: {len(todo)} реплік")
+    by_id = {u["id"]: u for u in todo}
+    done = 0
+    for i in range(0, len(todo), CHUNK):
+        batch = todo[i : i + CHUNK]
+        payload = {"lines": [{"id": u["id"], "uk": u["uk"]} for u in batch]}
+        try:
+            data = _ask(llm, SPELL_SYSTEM, json.dumps(payload, ensure_ascii=False), max_tokens=200 + 120 * len(batch))
+        except RuntimeError:
+            continue
+        for item in data.get("lines", []):
+            try:
+                u = by_id[int(item.get("id"))]
+            except (KeyError, TypeError, ValueError):
+                continue
+            tts = _clean_tts(u["uk"], str(item.get("tts") or "").strip())
+            if tts:
+                u["tts"] = tts
+                done += 1
+    return done
+
+
 def _dictionary_lookup():
     try:
         import importlib.resources as res
@@ -293,7 +454,8 @@ def _dictionary_lookup():
     return known
 
 
-def fix_anglicisms(llm: LLM, units: list[dict], *, glossary: list[dict] | None = None, log=print) -> int:
+def fix_anglicisms(llm: LLM, units: list[dict], *, glossary: list[dict] | None = None,
+                   domain: str | None = None, log=print) -> int:
     """One editing pass over lines with transliterated/untranslated English words."""
     known = _dictionary_lookup()
     if known is None:
@@ -305,7 +467,8 @@ def fix_anglicisms(llm: LLM, units: list[dict], *, glossary: list[dict] | None =
     todo = [(u, s) for u in units if u.get("uk") for s in [find_suspects(u, known, keep)] if s]
     if not todo:
         return 0
-    log(f"   • прибираю англіцизми: {len(todo)} реплік")
+    log(f"   • {'перевіряю англіцизми' if domain else 'прибираю англіцизми'}: {len(todo)} реплік")
+    system = anglicism_system(domain)
     changed = 0
     by_id = {u["id"]: u for u, _ in todo}
     for i in range(0, len(todo), CHUNK):
@@ -313,7 +476,7 @@ def fix_anglicisms(llm: LLM, units: list[dict], *, glossary: list[dict] | None =
         payload = {"lines": [{"id": u["id"], "src": u["text"], "uk": u["uk"], "suspect": s, "max_syl": u["max_syl"]}
                              for u, s in batch]}
         try:
-            data = _ask(llm, ANGLICISM_SYSTEM, json.dumps(payload, ensure_ascii=False),
+            data = _ask(llm, system, json.dumps(payload, ensure_ascii=False),
                         max_tokens=200 + 160 * len(batch))
         except RuntimeError:
             continue
@@ -323,7 +486,11 @@ def fix_anglicisms(llm: LLM, units: list[dict], *, glossary: list[dict] | None =
             except (KeyError, TypeError, ValueError):
                 continue
             uk = str(item.get("uk", "")).strip()
-            if uk and uk != u["uk"]:
+            if uk == u["uk"] and not u.get("tts"):  # kept as is (e.g. a quoted UI label): still take the spelling
+                tts = _clean_tts(uk, str(item.get("tts") or "").strip())
+                if tts:
+                    u["tts"] = tts
+            elif uk and uk != u["uk"]:
                 u["uk"] = uk
                 tts = _clean_tts(uk, str(item.get("tts") or "").strip())
                 if tts:
@@ -415,9 +582,10 @@ def resolve_homographs(llm: LLM, units: list[dict], *, log=print) -> dict:
 CONTEXT_CHARS = 5000
 
 
-def _context_window(units: list[dict], first: int, n: int) -> str:
+def _context_window(units: list[dict], first: int, n: int, edge: dict | None = None) -> str:
     """Original text around the chunk (roughly half before, half after), for sense-for-sense translation.
-    Lines of the chunk itself are marked with » so the model sees where they sit in the story."""
+    Lines of the chunk itself are marked with » so the model sees where they sit in the story.
+    edge: text of the neighbouring parts of a long video, added at this part's ends."""
     lo, hi = first, first + n
     text = lambda a, b: " ".join(u["text"] for u in units[a:b])
     while (lo > 0 or hi < len(units)) and len(text(lo, hi)) < CONTEXT_CHARS:
@@ -429,14 +597,19 @@ def _context_window(units: list[dict], first: int, n: int) -> str:
     for i in range(lo, hi):
         mark = "» " if first <= i < first + n else ""
         parts.append(mark + units[i]["text"])
-    return "\n".join(parts)
+    out = "\n".join(parts)
+    if edge and lo == 0 and edge.get("before"):
+        out = edge["before"] + "\n" + out
+    if edge and hi == len(units) and edge.get("after"):
+        out = out + "\n" + edge["after"]
+    return out
 
 
-def _translate_chunk(llm, system, context, units, chunk, by_id, fixed_gender=None) -> None:
+def _translate_chunk(llm, system, context, units, chunk, by_id, fixed_gender=None, edge=None) -> None:
     first = units.index(chunk[0])
     prev = [{"src": u["text"], "uk": u.get("uk", "")} for u in units[max(0, first - 6) : first]]
     nxt = [u["text"] for u in units[first + len(chunk) : first + len(chunk) + 4]]
-    payload = {**context, "transcript_context": _context_window(units, first, len(chunk)), "previous": prev,
+    payload = {**context, "transcript_context": _context_window(units, first, len(chunk), edge), "previous": prev,
                "lines": [{"id": u["id"], "src": u["text"], "max_syl": u["max_syl"],
                           **({"speaker": u["gender"]} if u.get("gender") and not fixed_gender else {})}
                          for u in chunk],
@@ -452,7 +625,7 @@ def _translate_chunk(llm, system, context, units, chunk, by_id, fixed_gender=Non
                 break
             half = len(left) // 2  # a smaller request is far less likely to break
             for part in (left[:half], left[half:]):
-                _translate_chunk(llm, system, context, units, part, by_id, fixed_gender)
+                _translate_chunk(llm, system, context, units, part, by_id, fixed_gender, edge)
             return
         for item in data.get("lines", []):
             try:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import shutil
 import subprocess
@@ -39,8 +40,106 @@ def has_stream(path: str | Path, kind: str) -> bool:
     return any(s.get("codec_type") == kind for s in probe(path).get("streams", []))
 
 
-def extract_audio(video: str | Path, out_wav: Path, sr: int = 44100) -> None:
-    _run(["ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "2", "-ar", str(sr), "-c:a", "pcm_f32le", str(out_wav)])
+_DECODE_ERROR = "Error submitting packet to decoder"
+SALVAGE_SKIP = 0.5  # seconds jumped past the point where the decoder died
+MAX_LOST = 0.9  # fraction of silence above which a damaged track is useless
+
+
+def extract_audio(video: str | Path, out_wav: Path, sr: int = 44100, *, start: float = 0.0,
+                  length: float | None = None) -> None:
+    """Decode the default audio track to stereo float WAV.
+
+    A clean track goes through one ffmpeg call. A damaged one (corrupt AAC packets) makes ffmpeg
+    either drop packets, which shifts everything after them, or die when a garbage packet "changes"
+    the sample rate. Such a track is decoded by `_salvage_audio`: a fresh decoder is restarted past
+    each failure and every piece is placed at its own timestamp, so the timeline stays aligned with
+    the video and the broken spots become silence.
+
+    start/length: a part of a long video (seconds in the input); the WAV then has exactly
+    round(length * sr) frames, so the parts add up to the whole.
+    """
+    seek = ["-ss", f"{start:.6f}"] if start else []
+    cut = ["-t", f"{length:.6f}"] if length is not None else []
+    cmd = ["ffmpeg", "-nostdin", "-y", "-max_error_rate", "1.0", *seek, "-i", str(video), *cut, "-vn",
+           "-ac", "2", "-ar", str(sr), "-c:a", "pcm_f32le", str(out_wav)]
+    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    bad = proc.stderr.count(_DECODE_ERROR)
+    if proc.returncode == 0 and not bad:
+        if length is not None:
+            _fit_file(Path(out_wav), round(length * sr))
+        return
+    if not bad:  # not a damaged stream: report the real ffmpeg error
+        tail = "\n".join(proc.stderr.strip().splitlines()[-15:])
+        raise RuntimeError(f"Команда завершилась з помилкою: {' '.join(cmd[:3])} …\n{tail}")
+    print(f"   ! аудіодоріжка пошкоджена (декодер відкинув {bad} пакетів) — відновлюю з вирівнюванням "
+          "за часом, пошкоджені місця стануть тишею", flush=True)
+    y, runs = _salvage_audio(video, sr, start=start, length=length)
+    lost = silent_fraction(y, sr)
+    print(f"   ! відновлено: {len(y) / sr:.0f} с, без звуку ≈{lost * len(y) / sr:.0f} с ({lost:.0%}), "
+          f"перезапусків декодера: {runs}", flush=True)
+    if lost > MAX_LOST and length is not None:  # one part of a long video: the others must still go on
+        print("   ! ця частина майже вся пошкоджена — вона буде переважно тишею", flush=True)
+    elif lost > MAX_LOST:
+        raise SystemExit(f"Аудіо у файлі {Path(video).name} майже повністю пошкоджене ({lost:.0%} без звуку) — "
+                         "перекладати нічого. Знайдіть цілу копію відео.")
+    import soundfile as sf
+
+    sf.write(str(out_wav), y, sr, subtype="FLOAT")
+
+
+def _salvage_audio(video: str | Path, sr: int, *, start: float = 0.0,
+                   length: float | None = None) -> tuple[np.ndarray, int]:
+    import tempfile
+
+    total = length if length is not None else duration(video) - start
+    with tempfile.TemporaryDirectory() as td:
+        raw = Path(td) / "a.raw"
+
+        def decode(pos: float) -> tuple[np.ndarray, bool]:
+            # -reinit_filter 0: a garbage packet that claims another sample rate or layout stops the
+            # run instead of being resampled into noise; the caller restarts past it.
+            cut = ["-t", f"{total - pos:.3f}"] if length is not None else []
+            proc = subprocess.run(
+                ["ffmpeg", "-nostdin", "-v", "error", "-y", "-max_error_rate", "1.0", "-reinit_filter", "0",
+                 "-ss", f"{start + pos:.3f}", "-i", str(video), *cut, "-vn",
+                 "-af", "aresample=async=1:first_pts=0", "-ac", "2", "-ar", str(sr), "-f", "f32le", str(raw)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            y = np.fromfile(raw, np.float32).reshape(-1, 2) if raw.exists() else np.zeros((0, 2), np.float32)
+            raw.unlink(missing_ok=True)
+            return y, proc.returncode == 0
+
+        return salvage_timeline(decode, total, sr)
+
+
+def salvage_timeline(decode, total: float, sr: int, skip: float = SALVAGE_SKIP,
+                     max_runs: int = 2000) -> tuple[np.ndarray, int]:
+    """Assemble `total` seconds of audio from `decode(pos) -> (samples from pos, finished)`.
+
+    Each failed run is restarted `skip` seconds past the last decoded sample; gaps stay silent.
+    """
+    n = round(total * sr)
+    out = np.zeros((n, 2), np.float32)
+    pos, runs = 0.0, 0
+    while pos < total and runs < max_runs:
+        runs += 1
+        y, finished = decode(pos)
+        i = round(pos * sr)
+        k = max(0, min(len(y), n - i))
+        out[i:i + k] = y[:k]
+        if finished:
+            break
+        pos += k / sr + skip
+    return out, runs
+
+
+def silent_fraction(y: np.ndarray, sr: int, window: float = 0.1) -> float:
+    """Share of `window`-long stretches that are exact digital silence (how salvage fills gaps)."""
+    w = max(1, int(sr * window))
+    m = len(y) // w
+    if m == 0:
+        return 0.0
+    peak = np.abs(y[:m * w]).reshape(m, w, -1).max(axis=(1, 2))
+    return float(np.mean(peak == 0.0))
 
 
 def to_mono_16k(in_wav: Path, out_wav: Path) -> None:
@@ -66,6 +165,42 @@ def write(path: Path, y: np.ndarray, sr: int) -> None:
     import soundfile as sf
 
     sf.write(str(path), y, sr, subtype="FLOAT")
+
+
+def write_flac(path: Path, y: np.ndarray, sr: int) -> None:
+    """Lossless 24-bit copy: part mode keeps finished stems this way (about half the size of float WAV)."""
+    import soundfile as sf
+
+    sf.write(str(path), np.clip(y, -1.0, 1.0), sr, subtype="PCM_24")
+
+
+def to_flac(wav: Path) -> Path:
+    y, sr = read(wav)
+    out = Path(wav).with_suffix(".flac")
+    write_flac(out, y, sr)
+    Path(wav).unlink()
+    return out
+
+
+def existing(path: Path) -> Path:
+    """`path`, or its .flac twin when part cleanup has compressed it."""
+    path = Path(path)
+    if path.exists():
+        return path
+    flac = path.with_suffix(".flac")
+    return flac if flac.exists() else path
+
+
+def fit_length(y: np.ndarray, n: int) -> np.ndarray:
+    if len(y) >= n:
+        return y[:n]
+    return np.pad(y, ((0, n - len(y)),) + ((0, 0),) * (y.ndim - 1))
+
+
+def _fit_file(path: Path, n: int) -> None:
+    y, sr = read(path)
+    if len(y) != n:
+        write(path, fit_length(y, n), sr)
 
 
 def resample(y: np.ndarray, sr_in: int, sr_out: int) -> np.ndarray:
@@ -149,15 +284,52 @@ def limit(y: np.ndarray, sr: int, threshold_db: float = -1.0) -> np.ndarray:
     return board(y.T.astype(np.float32), sr).T
 
 
-def mux(video: Path, audio_wav: Path, out: Path, *, srt: Path | None, keep_original: bool) -> None:
-    has_video = has_stream(video, "video")
-    has_audio = has_stream(video, "audio")
+PREVIEW_BITRATE = 6_000_000  # hardware encoder's bitrate when the source's is unknown
+
+
+@functools.lru_cache(maxsize=1)
+def _has_videotoolbox() -> bool:
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
+    return "h264_videotoolbox" in out
+
+
+def _video_encoder(rate: int | None = None) -> tuple[str, ...]:
+    """Hardware H.264 on Apple Silicon, else a fast software encode (previews only).
+
+    rate: the source's video bitrate; a preview never gets more (hours of previews must fit the disk)."""
+    cap = lambda r: ("-maxrate", str(r), "-bufsize", str(2 * r)) if r else ()
+    if _has_videotoolbox():  # -b:v alone overshoots by ~1.5× at low rates; the cap holds it
+        rate = min(rate, PREVIEW_BITRATE) if rate else None
+        return ("-c:v", "h264_videotoolbox", "-b:v", str(rate or PREVIEW_BITRATE), *cap(rate))
+    return ("-c:v", "libx264", "-preset", "veryfast", "-crf", "20", *cap(rate))
+
+
+def video_bitrate(info: dict) -> int | None:
+    """Bitrate of the first video stream from ffprobe output, else the whole file's; None when unknown."""
+    stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), {})
+    for value in (stream.get("bit_rate"), info.get("format", {}).get("bit_rate")):
+        try:
+            if int(value) > 0:
+                return int(value)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def mux(video: Path, audio_wav: Path, out: Path, *, srt: Path | None, keep_original: bool,
+        clip: tuple[float, float] | None = None) -> None:
+    """clip=(start, length): only that range of `video` (a part preview); the video is re-encoded so it
+    starts exactly at `start` rather than at the previous keyframe."""
+    info = probe(video)
+    kinds = {s.get("codec_type") for s in info.get("streams", [])}
+    has_video, has_audio = "video" in kinds, "audio" in kinds
     sub_codec = "mov_text" if out.suffix.lower() in {".mp4", ".m4v", ".mov", ".m4a"} else "srt"
-    cmd = ["ffmpeg", "-y", "-i", str(video), "-i", str(audio_wav)]
+    rng = ["-ss", f"{clip[0]:.6f}", "-t", f"{clip[1]:.6f}"] if clip else []
+    cmd = ["ffmpeg", "-y", *rng, "-i", str(video), "-i", str(audio_wav)]
     if srt:
         cmd += ["-i", str(srt)]
     if has_video:
-        cmd += ["-map", "0:v:0", "-c:v", "copy"]
+        cmd += ["-map", "0:v:0", *(_video_encoder(video_bitrate(info)) if clip else ("-c:v", "copy"))]
     cmd += ["-map", "1:a:0"]
     keep = keep_original and has_audio
     if keep:

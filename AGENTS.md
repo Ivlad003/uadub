@@ -35,6 +35,7 @@ extract → separate → asr → translate → tts → mix → mux
 | File | What lives there |
 |---|---|
 | `uadub/cli.py` | argparse, stage orchestration (one `spawn` subprocess per stage), `state.json` cache, `--review` pause, final links, `--stress-lookup`, prefetch |
+| `uadub/parts.py` | long videos: cut plan at pauses, per-part runs, shared brief, assembly (ADR-027) |
 | `uadub/config.py` | `Options` dataclass, model ids, voices, `fingerprint(stage)` |
 | `uadub/stages.py` | the seven stages; `_st_fit`, `_omni_duration`, `_clone_window`, `_emotion_styles` |
 | `uadub/translate.py` | all LLM prompts (`SYSTEM`, `BRIEF_SYSTEM`, `SHORTEN_SYSTEM`, `ANGLICISM_SYSTEM`, `STRESS_SYSTEM`), `_ask` / `_salvage_lines`, budgets |

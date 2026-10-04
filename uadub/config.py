@@ -73,6 +73,15 @@ SYLLABLE_RATE = {"ukr": 5.3, "omni": 6.2, "st": 4.8}
 STAGES = ["extract", "separate", "asr", "translate", "tts", "mix", "mux"]
 
 
+def _file_hash(path: str | None) -> str:
+    import hashlib
+
+    try:
+        return hashlib.sha1(Path(path).read_bytes()).hexdigest()[:12]
+    except (OSError, TypeError):
+        return ""
+
+
 @dataclass
 class Options:
     input: str
@@ -99,6 +108,14 @@ class Options:
     subs: str | None = None  # existing subtitles to use instead of speech recognition
     subs_lang: str | None = None  # language of those subtitles (default: source_lang; "uk" = no translation)
     emotion: float = 0.0  # StyleTTS2: share (0–1) of the original line's intonation in the chosen voice
+    domain: str | None = None  # None: plain Ukrainian; "auto" or a field name: specialist jargon of that field
+    part_minutes: float | None = None  # long videos: None = automatic, 0 = never split, N = parts of ~N min
+    keep_parts: bool = False  # keep the part previews after the final assembly
+    clip_start: float | None = None  # this run is one part of a long video: its range in the input (s)
+    clip_end: float | None = None
+    shared_brief: str | None = None  # brief of the whole long video (replaces the per-part brief)
+    edge_context: str | None = None  # neighbouring parts' text for translation context
+    loudness_target: float | None = None  # LUFS shared by all parts of a long video
 
     # ---- persistence -------------------------------------------------------
     def save(self, path: Path) -> None:
@@ -177,4 +194,13 @@ class Options:
             fp["version"] = 13  # bump when prompts/budgets change → old runs re-translate
             fp["engine"] = self.engine
             fp["speaker_gender"] = self.speaker_gender
+            if self.domain:
+                fp["domain"] = self.domain  # only when on, so existing runs keep their cache
+        if self.clip_start is not None and stage in ("extract", "mix", "mux"):
+            fp["clip"] = [self.clip_start, self.clip_end]
+        if stage == "translate" and self.shared_brief:
+            fp["shared_brief"] = _file_hash(self.shared_brief)
+            fp["edge"] = _file_hash(self.edge_context)
+        if stage == "mix" and self.loudness_target is not None:
+            fp["loudness_target"] = round(self.loudness_target, 2)
         return fp

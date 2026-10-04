@@ -50,13 +50,54 @@ _STRESS_HELP = {
 }
 
 
-def header(engine: str) -> str:
+def review_domain(work: Path) -> str | None:
+    """Field of the video when the specialist mode (--domain) is on, else None."""
+    try:
+        from .config import Options
+
+        opt = Options.load(work / "options.json")
+    except Exception:
+        return None
+    if not opt.domain:
+        return None
+    if opt.domain != "auto":
+        return opt.domain
+    try:
+        found = json.loads((work / "brief.json").read_text(encoding="utf-8")).get("domain")
+    except Exception:
+        found = None
+    return found or "сфера відео"
+
+
+def _domain_terms(work: Path) -> set[str]:
+    """Lower-case words of the glossary renderings: in the specialist mode they are wanted jargon."""
+    try:
+        info = json.loads((work / "brief.json").read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    words: set[str] = set()
+    for g in (info.get("brief") or {}).get("glossary") or []:
+        if isinstance(g, dict):
+            words.update(w.lower() for w in re.findall(r"[А-Яа-яЄєІіЇїҐґ'’]+", str(g.get("uk", ""))))
+    return words
+
+
+def terms_note(domain: str | None) -> str:
+    """One-line terminology rule for the review header and the agent prompt."""
+    if domain:
+        return (f"фаховий переклад для сфери «{domain}»: усталені терміни фахівців, зокрема англіцизми "
+                "(фреймворк, деплой), лишаються; кнопки й меню — як на екрані, латиницею в лапках; "
+                "без сленгу на кшталт «юзати», «дефолтний»")
+    return "без англіцизмів"
+
+
+def header(engine: str, domain: str | None = None) -> str:
     return f"""# uadub — сценарій дубляжу на перевірку
 
 Редагуйте лише рядки `UK:` і `TTS:`. Заголовки `## …`, рядок оригіналу (`EN:`, `KO:` …) і `НАГОЛОСИ:` не змінюйте.
 
 - `UK:` — переклад, він же субтитри. Перекладаємо за змістом, а не дослівно; ідіоми й крилаті
-  вирази — українськими відповідниками; без англіцизмів.
+  вирази — українськими відповідниками; {terms_note(domain)}.
 - `TTS:` — як читати вголос, якщо це відрізняється від UK: числа й дати словами, назви кирилицею
   так, як їх вимовляють українською. Порожній рядок означає «читати як UK».
 - `складів X/Y`: Y — скільки складів уміщається в таймінг. Трохи більше можна: озвучка прискориться.
@@ -118,7 +159,26 @@ _AGENT_STRESS = {
 }
 
 
-def agent_task(engine: str, src_srt: str = "en.srt") -> str:
+_PLAIN_TERMS = """- Без англіцизмів: назви кнопок, меню й звичайні терміни — українською («Use this model» →
+  «Використати цю модель», browse → переглянути, quantization → квантування, checkbox → прапорець).
+  Латиницею лишаються тільки власні назви (LM Studio, Hugging Face, GGUF). Англійських слів,
+  записаних кирилицею («юз зіс модел», «брауз», «квантайзейшн», «рантайм»), бути не повинно."""
+
+_DOMAIN_TERMS = """- Фаховий переклад: глядачі — фахівці сфери «{domain}». Терміни — так, як їх кажуть українські
+  фахівці, зокрема усталені англіцизми (у розробці ПЗ: фреймворк, деплой, коміт, пул-реквест, бекенд);
+  не заміняй їх штучними відповідниками, яких ніхто не вживає. Якщо усталений термін питомо
+  український — він (база даних, квантування). Назви кнопок, меню й налаштувань, які глядач бачить
+  на екрані, — як в оригіналі, латиницею в лапках (натисніть «Use this model»). Сленгу й випадкових
+  транслітерацій звичайних слів («юзати», «дефолтний», «юз зіс модел») бути не повинно."""
+
+_PLAIN_UNKNOWN = "англіцизми (заміни в UK українським словом) або назви (перевір, що TTS вимовляє їх правильно)."
+_DOMAIN_UNKNOWN = ("фахові терміни (усталені — лишай), сленг (заміни) або назви (перевір, що TTS вимовляє їх "
+                   "правильно).")
+
+
+def agent_task(engine: str, src_srt: str = "en.srt", domain: str | None = None) -> str:
+    terms = _DOMAIN_TERMS.replace("{domain}", domain) if domain else _PLAIN_TERMS
+    unknown = _DOMAIN_UNKNOWN if domain else _PLAIN_UNKNOWN
     return f"""# Завдання: перевірити сценарій українського дубляжу
 
 У цій папці `review.md` — сценарій дубляжу іноземного відео українською (одна репліка — один блок
@@ -154,10 +214,7 @@ def agent_task(engine: str, src_srt: str = "en.srt") -> str:
   («Коли справа стає завантаження» ✗ → «Коли йдеться про завантаження» ✓).
 - Виправ помилки змісту, пропущені думки, русизми, суржик, кальки й неприродні звороти.
   Тримай одну термінологію і одне звертання (ти/ви) в усьому тексті.
-- Без англіцизмів: назви кнопок, меню й звичайні терміни — українською («Use this model» →
-  «Використати цю модель», browse → переглянути, quantization → квантування, checkbox → прапорець).
-  Латиницею лишаються тільки власні назви (LM Studio, Hugging Face, GGUF). Англійських слів,
-  записаних кирилицею («юз зіс модел», «брауз», «квантайзейшн», «рантайм»), бути не повинно.
+{terms}
 - Рід у минулому часі (зробив/зробила) — за статтею мовця з заголовка («чол. голос» / «жін. голос»)
   і змістом; рід співрозмовника (ти готовий/готова) — зі змісту.
 - Корейські/японські імена — за системою Концевича/Коваленка, однаково в усьому тексті.
@@ -170,7 +227,7 @@ def agent_task(engine: str, src_srt: str = "en.srt") -> str:
   так, як їх вимовляють українською (GitHub → ґітхаб, LM Studio → ел-ем студіо, API → ей-пі-ай).
 - Порожній TTS означає «читати як UK». Якщо змінюєш UK, а TTS був заповнений — онови й TTS.
 - Список «Немає в словнику» наприкінці файлу — слова, яких не знає словник: зазвичай це
-  англіцизми (заміни в UK українським словом) або назви (перевір, що TTS вимовляє їх правильно).
+  {unknown}
 
 {_AGENT_STRESS.get(engine, _AGENT_STRESS["omni"])}
 ## Наприкінці
@@ -178,13 +235,13 @@ def agent_task(engine: str, src_srt: str = "en.srt") -> str:
 """
 
 
-def agent_prompt(engine: str) -> str:
+def agent_prompt(engine: str, domain: str | None = None) -> str:
     stress = {"st": "та наголоси (рядки НАГОЛОСИ:, правки через TTS: і stress.txt)",
               "ukr": "і явні помилки наголосу",
               "omni": "(наголоси не чіпай)"}.get(engine, "(наголоси не чіпай)")
     return ("Прочитай AGENTS.md у поточній папці й виконай його. Спершу прочитай увесь оригінал і зрозумій "
             "логіку відео, потім перевір і виправ review.md: переклад за змістом, а не дослівно; ідіоми й "
-            "крилаті вирази — українськими відповідниками; без англіцизмів; помилки розпізнавання в оригіналі; "
+            f"крилаті вирази — українськими відповідниками; {terms_note(domain)}; помилки розпізнавання в оригіналі; "
             f"вимова чисел і назв {stress}. Змінюй лише review.md і stress.txt. "
             "Наприкінці коротко перелічи зміни.")
 
@@ -307,7 +364,8 @@ def refresh_agents(work: Path) -> None:
         from .config import Options
 
         opt = Options.load(work / "options.json")
-        (work / AGENTS).write_text(agent_task(_engine(work), f"{opt.text_lang}.srt"), encoding="utf-8")
+        (work / AGENTS).write_text(agent_task(_engine(work), f"{opt.text_lang}.srt", review_domain(work)),
+                                   encoding="utf-8")
     except Exception:
         pass
 
@@ -325,7 +383,8 @@ def export_review(work: Path) -> Path:
     path = work / REVIEW
     if path.exists():
         path.replace(work / "review.old.md")  # translation changed → keep the previous edits around
-    out = [header(engine)]
+    domain = review_domain(work)
+    out = [header(engine, domain)]
     snapshot = {}
     for u in units:
         uk = u.get("uk", "")
@@ -345,11 +404,15 @@ def export_review(work: Path) -> Path:
         out.append("")
         snapshot[str(u["id"])] = {"uk": uk, "tts": tts}
     unknown = _unknown_words(units)
+    if domain:  # glossary jargon is wanted in the specialist mode
+        terms = _domain_terms(work)
+        unknown = [w for w in unknown if w not in terms]
     if unknown:
-        out.append("---\n\n**Немає в словнику (можливі англіцизми чи помилки, перевірте):** " + ", ".join(unknown) + "\n")
+        what = "сленг, неусталені терміни чи помилки" if domain else "можливі англіцизми чи помилки"
+        out.append(f"---\n\n**Немає в словнику ({what}, перевірте):** " + ", ".join(unknown) + "\n")
     path.write_text("\n".join(out), encoding="utf-8")
     (work / SNAPSHOT).write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
-    (work / AGENTS).write_text(agent_task(engine, f"{src}.srt"), encoding="utf-8")
+    (work / AGENTS).write_text(agent_task(engine, f"{src}.srt", domain), encoding="utf-8")
     local = work / LOCAL_STRESS
     if not local.exists():
         local.write_text("# Наголоси для цього відео: слово з + перед наголошеною голосною, напр. зам+ок\n",
@@ -418,7 +481,7 @@ def review_hash(work: Path) -> str:
 
 
 def run_agent(spec: str, work: Path) -> None:
-    prompt = agent_prompt(_engine(work))
+    prompt = agent_prompt(_engine(work), review_domain(work))
     cmd = agent_command(spec, prompt)
     model = spec.partition(":")[2] if spec.partition(":")[0] in AGENT_COMMANDS else ""
     print(f"   • перевірка сценарію агентом: {cmd[0]}{f' (модель {model})' if model else ''} — у папці {work}",

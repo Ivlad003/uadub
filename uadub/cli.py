@@ -56,7 +56,10 @@ def _run_stage(stage: str, opt: Options) -> None:
     if stage not in HEAVY:
         from .stages import STAGE_FUNCS
 
-        STAGE_FUNCS[stage](opt)
+        try:
+            STAGE_FUNCS[stage](opt)
+        except RuntimeError as e:  # ffmpeg failures: the message already holds the useful part
+            raise SystemExit(f"\nЕтап «{stage}» завершився з помилкою:\n{e}") from None
         return
     proc = mp.get_context("spawn").Process(target=_child, args=(stage, str(opt.work)))
     proc.start()
@@ -75,6 +78,14 @@ def _save_state(path: Path, state: dict) -> None:
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2))
 
 
+def _terms_hint(domain: str | None) -> str:
+    if domain:
+        return (f"Фаховий переклад («{domain}»): терміни як у фахівців, усталені англіцизми лишаються\n"
+                "      (фреймворк, деплой); кнопки й меню — як на екрані («Use this model»). Без «юзати», «дефолтний».")
+    return ("Без англіцизмів: кнопки, меню й терміни — українською («Use this model» → «Використати цю модель»);\n"
+            "      латиницею лише власні назви (LM Studio, Hugging Face). Ніяких «юз зіс модел», «брауз», «рантайм».")
+
+
 _STRESS_RULE = {
     "st": "+ перед наголошеною голосною (зам+ок), лише в TTS: і stress.txt, один на слово; рядок НАГОЛОСИ:\n"
           "      показує, як буде прочитано. Перевірити слово: uadub --stress-lookup замок",
@@ -85,11 +96,15 @@ _STRESS_RULE = {
 }
 
 
+class UserStop(SystemExit):
+    """The user deliberately stopped the run (review pause): a long run must not go on to the next part."""
+
+
 def _review_pause(opt: Options, state: dict, state_path: Path, review: bool, review_with: str | None,
                   force_agent: bool = False) -> None:
     import shlex
 
-    from .review import AGENTS, LOCAL_STRESS, REVIEW, agent_prompt, export_review, run_agent
+    from .review import AGENTS, LOCAL_STRESS, REVIEW, agent_prompt, export_review, review_domain, run_agent
     from .stress import DEFAULT_DICT
     from .term import copy_to_clipboard, link, open_in_editor, shell_cd
 
@@ -114,7 +129,8 @@ def _review_pause(opt: Options, state: dict, state_path: Path, review: bool, rev
     if not review:
         print(f"   • сценарій: {link(w / REVIEW)}", flush=True)
         return
-    prompt = shlex.quote(agent_prompt(opt.engine))
+    domain = review_domain(w)
+    prompt = shlex.quote(agent_prompt(opt.engine, domain))
     claude_cmd = f"{shell_cd(w)} && claude {prompt}"
     opencode_cmd = f"{shell_cd(w)} && opencode run {prompt}"
     src = opt.text_lang
@@ -143,8 +159,7 @@ def _review_pause(opt: Options, state: dict, state_path: Path, review: bool, rev
    2. Ідіоми й крилаті вирази — українськими відповідниками, не дослівно:
       a piece of cake → простіше простого · break the ice → розтопити кригу · once in a blue moon → раз на сто років
       · when it comes to → коли йдеться про. Слова-паразити (kind of, you know, like) зазвичай пропускаємо.
-   3. Без англіцизмів: кнопки, меню й терміни — українською («Use this model» → «Використати цю модель»);
-      латиницею лише власні назви (LM Studio, Hugging Face). Ніяких «юз зіс модел», «брауз», «рантайм».
+   3. {_terms_hint(domain)}
    4. Довжина: «складів X/Y» — Y уміщається в таймінг; до +10 % можна, «⚠ задовго» — скоротіть.
    5. Рід: «чол./жін. голос» у заголовку — хто говорить (я зробив / я зробила); співрозмовник — зі змісту.
    6. TTS: числа й дати словами в правильному відмінку («о 8:30» → «о восьмій тридцять»),
@@ -157,14 +172,14 @@ def _review_pause(opt: Options, state: dict, state_path: Path, review: bool, rev
    {opencode_cmd}
 """, flush=True)
     if not sys.stdin.isatty():
-        raise SystemExit("Запустіть ту саму команду без --review, щоб озвучити з правками.")
+        raise UserStop("Запустіть ту саму команду без --review, щоб озвучити з правками.")
     while True:
         answer = input("Enter — озвучити з правками · o — відкрити сценарій · s — наголоси відео · "
                        "c — скопіювати команду для Claude Code · q — вийти: ").strip().lower()
         if answer == "":
             return
         if answer in ("q", "й", "quit", "exit"):
-            raise SystemExit("Зупинено. Щоб озвучити з правками, запустіть ту саму команду без --review.")
+            raise UserStop("Зупинено. Щоб озвучити з правками, запустіть ту саму команду без --review.")
         if answer in ("o", "щ"):
             open_in_editor(w / REVIEW)
         elif answer in ("s", "і", "ы"):
@@ -174,7 +189,8 @@ def _review_pause(opt: Options, state: dict, state_path: Path, review: bool, rev
 
 
 def run_pipeline(opt: Options, *, redo: str | None = None, stop_after: str | None = None,
-                 review: bool = False, review_with: str | None = None, text: bool = False) -> None:
+                 review: bool = False, review_with: str | None = None, text: bool = False,
+                 prefix: str = "", summary: bool = True) -> None:
     w = opt.work
     w.mkdir(parents=True, exist_ok=True)
     opt.save(w / "options.json")
@@ -211,7 +227,7 @@ def run_pipeline(opt: Options, *, redo: str | None = None, stop_after: str | Non
         if redo == stage:
             dirty = True
         if not dirty and state.get(stage) == fp:
-            print(f"[{i}/{len(STAGES)}] {titles[stage]} — вже готово, пропускаю", flush=True)
+            print(f"{prefix}[{i}/{len(STAGES)}] {titles[stage]} — вже готово, пропускаю", flush=True)
             if stage == stop_after:
                 break
             continue
@@ -219,17 +235,20 @@ def run_pipeline(opt: Options, *, redo: str | None = None, stop_after: str | Non
         for s in STAGES[STAGES.index(stage):]:
             state.pop(s, None)
         state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2))
-        print(f"[{i}/{len(STAGES)}] {titles[stage]}…", flush=True)
+        print(f"{prefix}[{i}/{len(STAGES)}] {titles[stage]}…", flush=True)
         t0 = time.time()
         _run_stage(stage, opt)
         print(f"   ✓ {time.time() - t0:.1f} с", flush=True)
         state[stage] = fp
         state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2))
         if stage == stop_after:
-            print(f"\nЗупинено після етапу «{stage}». Для зручного редагування перекладу "
-                  f"запустіть з --review.")
-            _print_texts(opt, text)
+            if summary:
+                print(f"\nЗупинено після етапу «{stage}». Для зручного редагування перекладу "
+                      f"запустіть з --review.")
+                _print_texts(opt, text)
             return
+    if not summary:
+        return
     from .term import link
 
     print(f"\nГотово за {(time.time() - t_all) / 60:.1f} хв:\n"
@@ -375,12 +394,21 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"голоси st: брати інтонацію кожної репліки з оригіналу (тембр лишається українським). "
                         f"K від 0 до 1 — наскільки сильно (без числа — {EMOTION_DEFAULT}). "
                         "Для clone інтонація й так копіюється")
+    p.add_argument("--domain", nargs="?", const="auto", default=None, metavar="СФЕРА",
+                   help="фаховий переклад: термінологія сфери відео, зокрема усталені англіцизми (фреймворк, деплой); "
+                        "кнопки інтерфейсу — як на екрані. Без СФЕРИ сфера визначається автоматично, або вкажіть її: "
+                        "--domain \"медицина\". Без прапорця — проста літературна мова для всіх")
     p.add_argument("--steps", type=int, default=16, help="кроки OmniVoice: 16 ≈ реальний час, 32 — повільніше й трохи чистіше")
     p.add_argument("--fast", action="store_true", help="швидша сепарація фону (htdemucs, ~3× швидше, трохи гірше)")
     p.add_argument("--sep-model", help=argparse.SUPPRESS)
     p.add_argument("--stress", choices=["auto", "dict", "off"], default="auto",
                    help="наголоси: auto — словник + омографи за контекстом (за замовч.), dict — лише словник, off")
     p.add_argument("--stress-dict", help="додатковий словник наголосів (крім ~/.config/uadub/stress.txt): рядки «замо́к» або «зам+ок»")
+    p.add_argument("--part-minutes", type=float, metavar="ХВ",
+                   help="довге відео: різати звук у паузах на частини ~ХВ хвилин, обробляти по черзі й склеїти "
+                        "(за замовч. автоматично для відео довших за 45 хв, частини по 15 хв; 0 — не різати)")
+    p.add_argument("--keep-parts", action="store_true",
+                   help="довге відео: не видаляти превʼю частин (<назва>.uk.parts/) після склеювання")
     p.add_argument("--review", action="store_true",
                    help="пауза перед озвученням: редагуєте сценарій review.md (вручну, Claude Code чи opencode), потім Enter")
     p.add_argument("--review-with", metavar="HARNESS[:MODEL]", default=os.environ.get("UADUB_REVIEW_WITH") or None,
@@ -480,6 +508,8 @@ def main(argv: list[str] | None = None) -> None:
         stress=args.stress,
         stress_dict=str(Path(args.stress_dict).expanduser().resolve()) if args.stress_dict else None,
         emotion=min(max(args.emotion or 0.0, 0.0), 1.0),
+        domain=(args.domain or "").strip() or None,
+        part_minutes=args.part_minutes, keep_parts=args.keep_parts,
     )
     if opt.emotion and opt.engine != "st":
         print("Увага: --emotion працює лише з голосами StyleTTS2 (st, st:<ім'я>, duo:st)"
@@ -499,7 +529,20 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Увага: переклад через {opt.llm.partition(':')[0]} — текст відео надсилається в хмару "
               "(розпізнавання й озвучення лишаються локальними).", flush=True)
     extra = f", інтонація оригіналу {opt.emotion:g}" if opt.emotion else ""
+    if opt.domain:
+        extra += ", фаховий переклад" + ("" if opt.domain == "auto" else f" ({opt.domain})")
     print(f"uadub: {inp.name} → {out.name}  (голос: {voice}{extra}, LLM: {opt.llm})\n", flush=True)
+    from .parts import choose_part_minutes, load_or_make_plan, run_long
+
+    minutes = choose_part_minutes(opt, A.duration(inp))
+    if minutes:
+        if args.review:
+            print("Порада: --review зупинятиметься перед озвученням кожної частини; "
+                  "для довгого відео зручніше --review-with.", flush=True)
+        plan = load_or_make_plan(opt.work, inp, minutes, opt.sample_rate)
+        run_long(opt, plan, redo=args.redo, stop_after=args.stop_after, review=args.review,
+                 review_with=args.review_with, text=args.text)
+        return
     run_pipeline(opt, redo=args.redo, stop_after=args.stop_after, review=args.review, review_with=args.review_with,
                  text=args.text)
 

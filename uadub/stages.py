@@ -25,6 +25,12 @@ def load_json(work: Path, name: str):
     return json.loads((work / name).read_text(encoding="utf-8"))
 
 
+def _voice_src(w: Path) -> Path:
+    """Separated speech if there is one (WAV, or FLAC after part cleanup), else the full audio."""
+    v = A.existing(w / "vocals.wav")
+    return v if v.exists() else A.existing(w / "audio.wav")
+
+
 def save_json(work: Path, name: str, data) -> None:
     (work / name).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -34,15 +40,23 @@ def stage_extract(opt: Options) -> None:
     w = opt.work
     if not A.has_stream(opt.input, "audio"):
         raise SystemExit("У файлі немає аудіодоріжки — нічого перекладати.")
-    A.extract_audio(opt.input, w / "audio.wav", opt.sample_rate)
+    if opt.clip_start is not None:
+        A.extract_audio(opt.input, w / "audio.wav", opt.sample_rate, start=opt.clip_start,
+                        length=opt.clip_end - opt.clip_start)
+    else:
+        A.extract_audio(opt.input, w / "audio.wav", opt.sample_rate)
     save_json(w, "meta.json", {"duration": A.duration(w / "audio.wav")})
 
 
 # ---------------------------------------------------------------------------
 def stage_separate(opt: Options) -> None:
     w = opt.work
-    for name in ("vocals.wav", "background.wav"):
+    for name in ("vocals.wav", "background.wav", "vocals.flac", "background.flac"):
         (w / name).unlink(missing_ok=True)
+    # Part cleanup removes audio.wav once stems exist: decode the part again. The separator needs the
+    # WAV; --no-separate only needs some copy (mix and asr also read the FLAC).
+    if not (w / "audio.wav").exists() and (opt.separate or not (w / "audio.flac").exists()):
+        stage_extract(opt)
     if not opt.separate:
         log("   • пропущено (режим закадрового перекладу поверх оригіналу)")
         return
@@ -129,7 +143,7 @@ FEMALE_F0 = 165.0  # Hz: typical adult male voices sit below, female above
 
 def _tag_speaker_gender(w: Path, sentences: list[dict]) -> None:
     """Guess each line's speaker gender from voice pitch (used for grammar and for --voice duo)."""
-    voice = w / "vocals.wav" if (w / "vocals.wav").exists() else w / "audio.wav"
+    voice = _voice_src(w)
     y, sr = A.read(voice, sr=16000, mono=True)
     for s in sentences:
         f0 = _median_pitch(y[int(s["start"] * sr) : int(s["end"] * sr)], sr)
@@ -146,7 +160,7 @@ def stage_asr(opt: Options) -> None:
         sentences = [s for s in read_subs(opt.subs) if s["start"] < total]
         log(f"   • субтитри: {len(sentences)} реплік з {Path(opt.subs).name}")
     else:
-        src = w / "vocals.wav" if (w / "vocals.wav").exists() else w / "audio.wav"
+        src = _voice_src(w)
         A.to_mono_16k(src, w / "asr16k.wav")
         if "parakeet" in opt.asr_model:
             sentences = _parakeet_sentences(opt, w / "asr16k.wav", total)
@@ -158,7 +172,7 @@ def stage_asr(opt: Options) -> None:
         # Whisper word times and subtitle cues are approximate → snap them to the actual speech
         from .segments import snap_to_speech
 
-        voice = w / "vocals.wav" if (w / "vocals.wav").exists() else w / "audio.wav"
+        voice = _voice_src(w)
         y, sr = A.read(voice, sr=16000, mono=True)
         log(f"   • уточнено межі {snap_to_speech(sentences, y, sr)} реплік за звуком")
     _tag_speaker_gender(w, sentences)
@@ -192,9 +206,12 @@ def stage_translate(opt: Options) -> None:
                 u["uk"] = u["text"]
             info = {"homographs": resolve_homographs(llm, units, log=log) if opt.stress == "auto" else {}}
         else:
+            shared = json.loads(Path(opt.shared_brief).read_text(encoding="utf-8")) if opt.shared_brief else None
+            edge = json.loads(Path(opt.edge_context).read_text(encoding="utf-8")) if opt.edge_context else None
             info = translate_units(llm, units, rate=SYLLABLE_RATE[opt.engine], gender=opt.speaker_gender,
                                    glossary_path=opt.glossary, max_speed=opt.max_speed,
-                                   stress=opt.stress, source_lang=opt.text_lang, log=log)
+                                   stress=opt.stress, source_lang=opt.text_lang, domain=opt.domain,
+                                   shared_brief=shared, edge=edge, log=log)
     finally:
         llm.close()
     save_json(w, "brief.json", info)
@@ -308,7 +325,7 @@ def _emotion_styles(eng, opt: Options, units: list[dict], voices: list[str]) -> 
     from .config import ST_VOICES
 
     w = opt.work
-    src = w / "vocals.wav" if (w / "vocals.wav").exists() else w / "audio.wav"
+    src = _voice_src(w)
     orig, _ = A.read(src, sr=eng.sr, mono=True)
     pitch = [_median_pitch(orig[int(u["start"] * eng.sr) : int(u["end"] * eng.sr)], eng.sr) for u in units]
     styles: list = []
@@ -409,7 +426,7 @@ def stage_tts(opt: Options) -> None:
             log(f"   • еталонний голос: «{ref_text[:80]}»")
             prompts = [eng.reference(ref, eng.sr, ref_text)] * len(units)
         else:  # clone each line from the original speaker's own voice
-            src = w / "vocals.wav" if (w / "vocals.wav").exists() else w / "audio.wav"
+            src = _voice_src(w)
             orig, _ = A.read(src, sr=eng.sr, mono=True)
             cache: dict[tuple[int, int], object] = {}
             pitch = [_median_pitch(orig[int(u["start"] * eng.sr) : int(u["end"] * eng.sr)], eng.sr) for u in units]
@@ -441,8 +458,10 @@ def stage_mix(opt: Options) -> None:
     sr = opt.sample_rate
     units = load_json(w, "units.json")
     total = load_json(w, "meta.json")["duration"]
-    separated = (w / "background.wav").exists()
-    bg, _ = A.read(w / ("background.wav" if separated else "audio.wav"), sr=sr)
+    separated = A.existing(w / "background.wav").exists()
+    bg, _ = A.read(A.existing(w / ("background.wav" if separated else "audio.wav")), sr=sr)
+    if opt.clip_end is not None:  # a part of a long video: exactly its length, so the parts add up
+        bg = A.fit_length(bg, round((opt.clip_end - opt.clip_start) * sr))
     n = len(bg)
     voice = np.zeros(n, dtype=np.float32)
 
@@ -464,10 +483,13 @@ def stage_mix(opt: Options) -> None:
         sped += p["speed"] > 1.0
         overflow += u["dub_end"] > u["slot_end"] + 0.05
 
-    # loudness: dub speaks as loud as the original speech did
-    ref = A.read(w / "vocals.wav", sr=sr)[0] if separated else bg
-    target = A.loudness(ref, sr)
-    target = float(np.clip(target if target is not None else -18.0, -26.0, -12.0))
+    # loudness: dub speaks as loud as the original speech did (one target for all parts of a long video)
+    if opt.loudness_target is not None:
+        target = opt.loudness_target
+    else:
+        ref = A.read(A.existing(w / "vocals.wav"), sr=sr)[0] if separated else bg
+        target = A.loudness(ref, sr)
+        target = float(np.clip(target if target is not None else -18.0, -26.0, -12.0))
     measured = A.loudness(voice, sr)
     voice *= 10 ** ((target - measured) / 20) if measured is not None else 1.0
 
@@ -481,12 +503,47 @@ def stage_mix(opt: Options) -> None:
 
 # ---------------------------------------------------------------------------
 def stage_mux(opt: Options) -> None:
+    if opt.clip_start is not None:
+        _part_output(opt)
+        return
     w = opt.work
     out = Path(opt.output)
     srt = w / "uk.srt"
     A.mux(Path(opt.input), w / "mix.wav", out, srt=srt if srt.exists() else None, keep_original=opt.keep_original)
     if srt.exists():
         shutil.copyfile(srt, out.with_suffix(".srt"))
+
+
+def _part_output(opt: Options) -> None:
+    """One part of a long video: keep its dub as FLAC for the final assembly and write a preview."""
+    w = opt.work
+    out = Path(opt.output)
+    srt = w / "uk.srt"
+    length = opt.clip_end - opt.clip_start
+    src = w / "mix.wav" if (w / "mix.wav").exists() else w / "dub.flac"
+    y, sr = A.read(src)
+    A.write_flac(w / "dub.flac", A.fit_length(y, round(length * sr)), sr)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    A.mux(Path(opt.input), w / "dub.flac", out, srt=srt if srt.exists() else None,
+          keep_original=opt.keep_original, clip=(opt.clip_start, length))
+    if srt.exists():
+        shutil.copyfile(srt, out.with_suffix(".srt"))
+    log(f"   • превʼю: {out}")
+    _cleanup_part(w)
+
+
+def _cleanup_part(w: Path) -> None:
+    """Free disk after a part is done: the stems a later re-dub needs stay as FLAC, the rest goes."""
+    (w / "mix.wav").unlink(missing_ok=True)
+    separated = A.existing(w / "vocals.wav").exists()
+    for name in ("vocals.wav", "background.wav"):
+        if (w / name).exists():
+            A.to_flac(w / name)
+    if (w / "audio.wav").exists():
+        if separated:
+            (w / "audio.wav").unlink()  # separate re-extracts it if ever needed
+        else:
+            A.to_flac(w / "audio.wav")  # --no-separate: mix and asr read it
 
 
 STAGE_FUNCS = {

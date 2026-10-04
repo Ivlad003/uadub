@@ -177,11 +177,64 @@ The translation runs on a local LLM (Gemma 4 26B-A4B by default) with these rule
   «раз на сто років»). The brief collects every idiom in the video first, so they are handled consistently.
 - **No anglicisms.** UI labels and ordinary terms are translated («Використати цю модель», «квантування»).
   Only proper names stay in Latin script. A separate pass finds words that look like English written
-  in Cyrillic and rewrites them.
+  in Cyrillic and rewrites them. For an audience of specialists, see `--domain` below.
 - **Timing.** Every line gets a syllable budget, because Ukrainian syllables are exactly its vowels.
   Lines that would not fit are condensed without dropping facts.
 - **Grammar.** Speaker gender (detected from voice pitch) drives я зробив/я зробила. A glossary keeps
   terms consistent; add your own with `--glossary terms.txt` (`English = Українська` per line).
+
+### Translating for specialists (`--domain`)
+
+The brief always detects the field of the video (IT, medicine, finance, cooking…) and prints it as
+`• сфера: …`. By default the translation is still plain literary Ukrainian for everyone. With
+`--domain` it is written for specialists in that field:
+
+- the jargon Ukrainian professionals actually say, including established anglicisms
+  (*deploy* → «деплой», *pull request* → «пул-реквест», *framework* → «фреймворк»), and native
+  terms where those are the established ones («база даних»);
+- button, menu and setting names stay as they appear on screen, in Latin script and in quotes
+  (натисніть «Use this model»), and are spelled out in Cyrillic for the voice;
+- slang and ad-hoc transliterations of ordinary words («юзати», «дефолтний») are still removed;
+- the review rules (`review.md`, the agent's `AGENTS.md`) switch to the same style.
+
+```bash
+uadub talk.mp4 --domain                 # detect the field automatically
+uadub talk.mp4 --domain "медицина"      # or name it yourself if the guess is wrong
+```
+
+Put `--domain` without a value after the file name, not right before it, or the file name is
+taken as the field. Turning the flag on or off re-runs translation (the cache keeps the rest).
+Your `--glossary` entries still win, which helps in narrow fields.
+
+### Long videos (`--part-minutes`)
+
+Videos longer than 45 minutes are dubbed in parts automatically:
+
+- the audio is cut at pauses into parts of about 15 minutes (the plan is printed first);
+- every part is recognised first, then one brief is built for the whole video, so terms, address
+  and `--domain` stay the same everywhere;
+- each finished part appears as a preview in `<name>.uk.parts/NN.uk.mp4`;
+- at the end the parts are joined into one `<name>.uk.mp4` and `<name>.uk.srt` over the original
+  video (no re-encoding of the video).
+
+Memory does not grow with the video length. If a part fails, the others continue; run the same
+command again to finish. If a part fails while it is still being recognised, the run stops before the
+shared brief (it needs every transcript); the error is saved in `state.json` in the work folder, and
+a rerun continues. To fix one part, edit `<name>.uadub/parts/NN/review.md` (it exists after a run
+with `--review` or `--review-with`) and rerun: only that part is re-voiced and the result is re-joined. With `--review` the pause happens for each part;
+`q` stops the whole run.
+
+```bash
+uadub lecture.mp4                       # automatic for videos over 45 min
+uadub lecture.mp4 --part-minutes 8      # shorter parts for a Mac with less memory
+uadub lecture.mp4 --part-minutes 0      # never split
+uadub lecture.mp4 --keep-parts          # keep the part previews
+```
+
+The work folder needs about 10 GB for 7 hours. `--subs` does not work with parts yet: with `--subs` a
+long video is processed whole (`--subs` with an explicit `--part-minutes N` is an error). A work folder
+of an earlier whole run (for example, started before this feature) is continued whole; add
+`--part-minutes 15` to split it.
 
 ### Translating with Claude, opencode, Codex or Gemini (`--llm`)
 
@@ -256,6 +309,9 @@ Ukrainian subtitles can simply be voiced with `--subs drama.uk.srt --subs-lang u
 | `--review-with HARNESS[:MODEL]` | automatic review by `claude`, `opencode`, `codex` or `gemini` (with an optional model) or a custom command |
 | `--redo review` | run the agent review again |
 | `--glossary FILE` | your term list, `English = Українська` |
+| `--domain [FIELD]` | translate for specialists: field jargon and established anglicisms, on-screen UI labels kept; the field is detected unless given |
+| `--part-minutes N` | long videos: parts of ~N min cut at pauses (automatic above 45 min; 0 = never) |
+| `--keep-parts` | keep the part previews after joining |
 | `--gender male/female` | speaker gender for grammar (otherwise from the voice or detected) |
 | `--stress auto/dict/off`, `--stress-dict FILE` | stress handling, extra stress dictionary |
 | `--no-separate` | keep the original audio quieted under the voice (voice-over style) |
@@ -324,6 +380,9 @@ All 31 StyleTTS2 voices transcribed back perfectly on a test sentence.
   shown in `review.md`.
 - Overlapping speech and singing are handled poorly. There is no lip-sync and no multi-speaker
   diarization (yet).
+- A damaged audio track (corrupt AAC packets) is salvaged rather than rejected. The broken parts
+  become silence, stay in sync with the video, and are not translated. The console prints how many
+  seconds were lost.
 
 ## Project layout
 
