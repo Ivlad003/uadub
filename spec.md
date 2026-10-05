@@ -209,7 +209,7 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
   `max_syl = slot × rate × fill`, where rate is engine-specific (`ukr` 5.3, `omni` 6.2, `st` 4.8) and
   `fill = min(max_speed, 1.3) × 0.96`. Lines over budget are condensed by the LLM (up to two passes).
   A line may spill up to 0.8 s into the next pause. Speed is capped by `--max-speed` (1.25), and
-  Rubber Band (pedalboard) stretching is a fallback only.
+  Rubber Band (pedalboard) stretching is a fallback only (how much of a fallback: ADR-028).
 - **Consequences:** Few artefacts and consistent pacing.
 
 ### ADR-010: Three TTS engines behind one `--voice` switch
@@ -434,6 +434,33 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
   part mode yet: with an automatic split the input is processed whole (more RAM), and an explicit
   `--part-minutes N` with `--subs` is an error.
 
+### ADR-028: One pace band, no double speed-up
+- **Context:** The `st` dub sounded uneven: lines sped up and slowed down from one to the next. On
+  `examples/ab/clip.mp4` the pace ran from 4.2 to 11.1 syl/s (p10–p90 4.8–8.2). Two causes:
+  `_st_fit` re-synthesised a long line faster (up to 1.35×) and then the mix stretched it *again*
+  with Rubber Band for any overrun above 0.1 s, each line by its own factor (16 of 28 lines,
+  1.03–1.14×); and short lines StyleTTS2 spoke slowly (4.2–4.9 syl/s) were left alone, next to
+  neighbours pushed to 7–8.
+- **Decision:**
+  - `fit.st_speed` picks the StyleTTS2 re-synthesis speed from a pace band (`MIN_RATE` 5.0,
+    `MAX_RATE` 7.5 syl/s, shared with OmniVoice): a line is sped up to reach the floor and to fit its
+    slot, but never past the ceiling or `min(1.35, --max-speed + 0.1)`. A line already faster than
+    the ceiling is not sped up at all: a rushed line is less intelligible than a late one.
+  - `fit.place_clips` lets a line run `spill` = 0.5 s past its slot untouched (the next line starts
+    late and the timeline catches up at the next gap); only a longer overrun is stretched, to fit
+    `avail + spill`, and stretches under 8 % are skipped (`min_stretch` 1.03 → 1.08).
+  - For engines that already fit their lines (`st`, `omni`) the mix may re-stretch by at most 1.15
+    (`MIX_RESTRETCH`); `ukr` keeps the full `--max-speed`, since the mix is its only fitting. The
+    ceiling holds in the mix too: `fit.pace_cap` lowers each line's cap to what keeps it under
+    `MAX_RATE`, so a line the engine already voiced at 7.5 syl/s is not stretched again.
+  - The mix summary counts a line as "over its slot" only past `slot_end + SPILL`.
+  - Fingerprints: tts (st) version 5, mix version 2. Translate is untouched.
+- **Consequences:** On the test clip (`st`, `--emotion 0.8`): p10–p90 4.8–8.2 → 4.9–7.4 syl/s,
+  rushed lines 3 → 0, lines stretched in the mix 16 → 9 (all ≤ 1.15), slowest line 4.2 → 4.7. The
+  price is drift: in continuous speech the dub starts up to ~1 s after the original line and catches
+  up at the next pause. Lines far over their syllable budget (the LLM failed to shorten them) now
+  spill instead of being rushed; a third shortening pass in translate is the deferred follow-up.
+
 ---
 
 ## 5. Rejected or deferred alternatives
@@ -446,6 +473,7 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
 | Cross-language `clone` for dramas | Strong accent (CER 0.33); `duo` / `duo:st` recommended |
 | Contextual ByT5 stress model (lang-uk ukrainian-tts-preprocessing, 92.5 % word accuracy) | Researched as a reference; dictionary + Stanza + LLM homographs chosen instead |
 | Higgs TTS with emotion tags | Heavy; better suited to the RTX desktop; not integrated |
+| Third shortening pass for lines far over budget | Would bump translate (minutes per video); ADR-028 lets such lines spill instead of rushing them, measure first |
 | Online stress dictionaries (goroh, r2u) | Breaks offline; licensing |
 | Lip-sync, multi-speaker diarization | Out of scope for now |
 | CUDA / RTX desktop support | MLX-based pipeline; would need a port |

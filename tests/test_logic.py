@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from uadub.fit import place_clips, target_duration
+from uadub.fit import place_clips, st_speed, target_duration
 from uadub.llm import extract_json
 from uadub.segments import assign_slots, build_units, merge_tokens_to_words
 from uadub.srt import make_cues, wrap
@@ -48,12 +48,42 @@ def test_build_units_merges_short_and_slots():
 
 def test_place_clips_speedup_and_spill():
     units = [{"start": 0.0, "end": 2.0, "slot_end": 2.5}, {"start": 2.6, "end": 4.0, "slot_end": 5.0}]
-    plan = place_clips(units, [2.4, 3.6], max_speed=1.25)
+    plan = place_clips(units, [2.4, 3.6], max_speed=1.25, spill=0.0)
     assert plan[0]["speed"] == 1.0  # fits
     assert abs(plan[1]["speed"] - 1.25) < 1e-6  # needs 1.5x, capped
     assert plan[1]["start"] == 2.6
-    plan = place_clips(units, [3.5, 1.0], max_speed=1.25)
+    plan = place_clips(units, [3.5, 1.0], max_speed=1.25, spill=0.0)
     assert plan[0]["speed"] == 1.25 and plan[1]["start"] > 2.6  # spill pushes next line
+
+
+def test_place_clips_small_overrun_is_not_stretched():
+    # A line 0.3 s over its slot keeps its pace: the overrun spills and the next line starts late.
+    units = [{"start": 0.0, "end": 2.0, "slot_end": 2.5}, {"start": 2.6, "end": 4.0, "slot_end": 5.0}]
+    plan = place_clips(units, [2.8, 1.0], max_speed=1.25)
+    assert plan[0]["speed"] == 1.0
+    assert plan[1]["start"] > 2.6
+    # Beyond the allowed spill it is stretched to fit `avail + spill`, not the bare slot.
+    plan = place_clips(units, [3.5, 1.0], max_speed=1.25, spill=0.5)
+    assert abs(plan[0]["speed"] - 3.5 / 3.0) < 1e-3
+    # Tiny stretches (< 8 %) are skipped: 3.2 s into 3.0 s would be 1.067.
+    plan = place_clips(units, [3.2, 1.0], max_speed=1.25, spill=0.5)
+    assert plan[0]["speed"] == 1.0
+
+
+def test_st_speed_targets_a_pace_band():
+    # Drawn-out line (12 syllables in 2.88 s = 4.2 syl/s) is brought up to the band floor, 5 syl/s.
+    assert abs(st_speed(2.88, 12, 3.12) - 5.0 * 2.88 / 12) < 1e-6
+    # In the band and fits its slot: untouched.
+    assert st_speed(2.82, 15, 2.96) == 1.0
+    # Slightly too long for the slot: sped up just enough.
+    assert abs(st_speed(3.16, 17, 2.96) - 3.16 / 2.96) < 1e-6
+    # Far too long: the speed-up stops where the pace would exceed 7.5 syl/s (never 1.35x here).
+    assert abs(st_speed(2.75, 20, 1.84) - 7.5 * 2.75 / 20) < 1e-6
+    # Already faster than the ceiling: never sped up, even when it does not fit.
+    assert st_speed(5.02, 41, 4.0) == 1.0
+    # No syllable count (digits only, etc.): fit the slot, capped at max_speed.
+    assert abs(st_speed(3.0, 0, 2.0) - 1.35) < 1e-6
+    assert st_speed(3.0, 0, 2.95) == 1.0  # 1.017: below the 2 % threshold
 
 
 def test_target_duration():
@@ -1096,3 +1126,21 @@ def test_brief_child_reports_progress(tmp_path, monkeypatch, capsys):
     assert all(line.strip() for line in out)  # no stray blank lines
     assert "   • бриф: шматок 1/1" in out and out[-1] == "   • бриф готовий: сфера «IT», термінів у глосарії: 1"
     assert _json.loads((tmp_path / "long_brief.json").read_text())["domain"] == "IT"
+
+
+def test_place_clips_per_line_caps():
+    # A line already at the pace ceiling gets its own, lower cap; below `min_stretch` it is left alone.
+    units = [{"start": 0.0, "end": 2.0, "slot_end": 2.5}, {"start": 2.6, "end": 4.0, "slot_end": 5.0}]
+    plan = place_clips(units, [3.5, 1.0], max_speed=1.25, spill=0.5, caps=[1.04, 1.25])
+    assert plan[0]["speed"] == 1.0 and plan[1]["start"] > 2.6
+    plan = place_clips(units, [3.5, 1.0], max_speed=1.25, spill=0.5, caps=[1.1, 1.25])
+    assert abs(plan[0]["speed"] - 1.1) < 1e-6
+
+
+def test_pace_cap():
+    from uadub.fit import pace_cap
+
+    assert pace_cap(2.0, 10, 1.15) == 1.15  # 5 syl/s: room up to 7.5
+    assert abs(pace_cap(2.0, 14, 1.15) - 7.5 * 2.0 / 14) < 1e-6  # 7 syl/s: only ~1.07 left
+    assert pace_cap(2.0, 20, 1.15) == 1.0  # already past the ceiling
+    assert pace_cap(2.0, 0, 1.15) == 1.15  # no syllables: engine cap only

@@ -1,4 +1,5 @@
-"""Speaking pace of a dub, per line: syllables / seconds. Below ~4.5 syl/s sounds drawn-out.
+"""Speaking pace of a dub, per line: syllables / seconds. Below ~5 syl/s sounds drawn-out,
+above ~7.5 rushed; a wide spread between neighbouring lines sounds unnatural.
 Usage: python tests/pace.py video.uadub"""
 import json, sys
 from pathlib import Path
@@ -16,7 +17,12 @@ for u in units:
     rate = syllables(plain.apply(speech_text(u))) / (u["tts_len"] / u.get("speed", 1.0))
     rates.append((rate, u))
 rates.sort(key=lambda x: x[0])
-slow = [r for r in rates if r[0] < 4.5]
-print(f"lines: {len(rates)}, median {rates[len(rates) // 2][0]:.1f} syl/s, drawn-out (<4.5): {len(slow)}")
-for r, u in slow[:8]:
+n = len(rates)
+slow = [r for r in rates if r[0] < 5.0]
+fast = [r for r in rates if r[0] > 7.5]
+stretched = [u for _, u in rates if u.get("speed", 1.0) > 1.0]
+p10, p90 = rates[int(n * 0.1)][0], rates[min(n - 1, int(n * 0.9))][0]
+print(f"lines: {n}, median {rates[n // 2][0]:.1f} syl/s, p10–p90 {p10:.1f}–{p90:.1f}, "
+      f"drawn-out (<5): {len(slow)}, rushed (>7.5): {len(fast)}, stretched in mix: {len(stretched)}")
+for r, u in slow[:8] + fast[-8:]:
     print(f"  {r:.1f} syl/s  #{u['id']}  {(u.get('tts_text') or speech_text(u))[:90]}")

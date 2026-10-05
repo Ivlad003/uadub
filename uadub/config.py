@@ -186,10 +186,12 @@ class Options:
         if stage == "tts":
             from .stress import default_dict_paths, dict_fingerprint
 
-            fp["version"] = 4 if self.engine == "st" else 3  # st: sentence-start stress fix
+            fp["version"] = 5 if self.engine == "st" else 3  # st: pace band in st_speed (ADR-028)
             fp["stress_dict_hash"] = dict_fingerprint(default_dict_paths(self.stress_dict, self.work))
             if self.emotion and self.engine == "st":
                 fp["emotion"] = self.emotion  # only when on, so existing runs keep their cache
+        if stage == "mix":
+            fp["version"] = 2  # spill tolerance, no re-stretch of fitted lines (ADR-028)
         if stage == "translate":
             fp["version"] = 13  # bump when prompts/budgets change → old runs re-translate
             fp["engine"] = self.engine

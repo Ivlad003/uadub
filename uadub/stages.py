@@ -12,7 +12,7 @@ import numpy as np
 
 from . import audio as A
 from .config import CACHE_DIR, SYLLABLE_RATE, Options
-from .fit import place_clips, target_duration
+from .fit import MAX_RATE, MIN_RATE, SPILL, pace_cap, place_clips, st_speed, target_duration
 from .segments import assign_slots, build_units, merge_tokens_to_words, slot
 from .srt import make_cues, write_srt
 
@@ -270,11 +270,6 @@ def _speakable(text: str) -> bool:
     return bool(re.search(r"[^\W\d_]", text or ""))
 
 
-# Ukrainian speaking-rate band for the dub (syllables per second). Outside it speech sounds
-# either drawn-out or rushed.
-MIN_RATE, MAX_RATE = 5.0, 7.5
-
-
 def _omni_duration(eng, text: str, prompt, slot_s: float, max_speed: float) -> float:
     """Always give OmniVoice an explicit length.
 
@@ -293,25 +288,21 @@ def _omni_duration(eng, text: str, prompt, slot_s: float, max_speed: float) -> f
 
 
 ST_MAX_SPEED = 1.35  # StyleTTS2 still sounds natural up to ~1.3×
-ST_MIN_RATE = 4.4  # its natural pace is ~4.5–5 syl/s; only clearly drawn-out lines are sped up
+MIX_RESTRETCH = 1.15  # engines that already fitted their lines may be stretched only this much more
 
 
 def _st_fit(eng, text: str, voice: str, plain: str, slot_s: float, max_speed: float, style=None) -> np.ndarray:
     """Voice a line with StyleTTS2, re-synthesising faster (its own `speed`, no time-stretch
-    artefacts) if it is too long for the slot or slower than a natural pace."""
+    artefacts) when it is drawn-out or too long for the slot; see `st_speed` for the pace band."""
     from .textnorm import syllables
 
     y = A.trim_silence(eng.synth(text, voice, 1.0, style=style), eng.sr)
     length = len(y) / eng.sr
     if length <= 0:
         return y
-    speed = 1.0
-    if length > slot_s:
-        speed = min(max(max_speed, 1.0) + 0.1, ST_MAX_SPEED, length / slot_s)
-    syl = syllables(plain)
-    if syl and syl / length < ST_MIN_RATE:
-        speed = max(speed, min(ST_MAX_SPEED, length * ST_MIN_RATE / syl))
-    if speed > 1.02:
+    cap = min(ST_MAX_SPEED, max(max_speed, 1.0) + 0.1)
+    speed = st_speed(length, syllables(plain), slot_s, max_speed=cap)
+    if speed > 1.0:
         y = eng.synth(text, voice, speed, style=style)
     return y
 
@@ -454,6 +445,9 @@ def stage_tts(opt: Options) -> None:
 
 # ---------------------------------------------------------------------------
 def stage_mix(opt: Options) -> None:
+    from .textnorm import syllables
+    from .translate import speech_text
+
     w = opt.work
     sr = opt.sample_rate
     units = load_json(w, "units.json")
@@ -465,7 +459,12 @@ def stage_mix(opt: Options) -> None:
     n = len(bg)
     voice = np.zeros(n, dtype=np.float32)
 
-    plan = place_clips(units, [u.get("tts_len", 0.0) for u in units], max_speed=opt.max_speed)
+    # st/omni already fitted their lines at synthesis time; here only a long overrun is stretched
+    # again, and gently, so the pace does not jump from line to line.
+    restretch = opt.max_speed if opt.engine == "ukr" else min(opt.max_speed, MIX_RESTRETCH)
+    lengths = [u.get("tts_len", 0.0) for u in units]
+    caps = [pace_cap(n, syllables(speech_text(u)), restretch) for u, n in zip(units, lengths)]
+    plan = place_clips(units, lengths, max_speed=restretch, caps=caps)
     sped = overflow = 0
     for u, p in zip(units, plan):
         u.update(dub_start=p["start"], speed=p["speed"])
@@ -481,7 +480,7 @@ def stage_mix(opt: Options) -> None:
             voice[s:e] += y[: e - s]
         u["dub_end"] = round(p["start"] + len(y) / sr, 3)
         sped += p["speed"] > 1.0
-        overflow += u["dub_end"] > u["slot_end"] + 0.05
+        overflow += u["dub_end"] > u["slot_end"] + SPILL + 0.05
 
     # loudness: dub speaks as loud as the original speech did (one target for all parts of a long video)
     if opt.loudness_target is not None:

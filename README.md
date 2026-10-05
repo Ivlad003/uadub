@@ -182,6 +182,10 @@ The translation runs on a local LLM (Gemma 4 26B-A4B by default) with these rule
   in Cyrillic and rewrites them. For an audience of specialists, see `--domain` below.
 - **Timing.** Every line gets a syllable budget, because Ukrainian syllables are exactly its vowels.
   Lines that would not fit are condensed without dropping facts.
+- **Even pace.** The dub stays in one speaking-rate band (about 5–7.5 syllables per second): drawn-out
+  lines are spoken a little faster, and no line is ever rushed past the ceiling to fit its slot. A line
+  may instead run up to half a second into the following pause; the next line starts a touch later and
+  the timeline catches up at the next gap. Only longer overruns are time-stretched, and gently.
 - **Grammar.** Speaker gender (detected from voice pitch) drives я зробив/я зробила. A glossary keeps
   terms consistent; add your own with `--glossary terms.txt` (`English = Українська` per line).
 
@@ -333,7 +337,7 @@ Ukrainian subtitles can simply be voiced with `--subs drama.uk.srt --subs-lang u
 | `--stress auto/dict/off`, `--stress-dict FILE` | stress handling, extra stress dictionary |
 | `--no-separate` | keep the original audio quieted under the voice (voice-over style) |
 | `--fast` | faster background separation (htdemucs) |
-| `--max-speed X` | maximum speed-up of a line (1.25) |
+| `--max-speed X` | maximum speed-up of a line (1.25); st/omni lines are re-stretched in the mix by at most 1.15 |
 | `--duck DB` | background level while the voice speaks (−4 dB; −13 dB with `--no-separate`) |
 | `--text` | also save the original transcript and the translation as `.txt` files next to the video (`<name>.en.txt`, `<name>.uk.txt`, side by side in `<name>.en-uk.txt`, with every stress marked in `<name>.uk.stress.txt`); links are printed at the end |
 | `--drop-original` | do not keep the original audio track |
