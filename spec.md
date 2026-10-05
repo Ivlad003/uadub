@@ -304,7 +304,8 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
 - **Decision:**
   - StyleTTS2's 256-dimensional style vector is timbre (first 128) plus prosody (last 128).
   - Per line, the prosody half is computed from the original vocal clip with the model's own
-    `predictor_encoder` and blended as `(1−K)·voice + K·original`. Default K = 0.8.
+    `predictor_encoder` and blended as `(1−K)·voice + K·original`. Default K = 1.0 (was 0.8: at 1.0 the
+    pitch range is 6.9 vs 6.6 semitones against the speaker's 7.6, with a slightly better CER).
   - Opposite-sex lines keep the plain style. Short lines borrow same-speaker neighbours (1.5–6 s).
 - **Measured on the test clip:** pitch range (10–90 %) 4.6 → 6.7 semitones (original speaker 6.9);
   25/28 lines wider; CER 0.073 → 0.075; drawn-out lines 2 → 0. Korean `duo:st --emotion`: CER 0.011.
@@ -446,6 +447,9 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
     `MAX_RATE` 7.5 syl/s, shared with OmniVoice): a line is sped up to reach the floor and to fit its
     slot, but never past the ceiling or `min(1.35, --max-speed + 0.1)`. A line already faster than
     the ceiling is not sped up at all: a rushed line is less intelligible than a late one.
+    StyleTTS2's `speed` is not linear (1.1 shortens a line by ~7 %, 1.2 by ~17 %, 1.4 garbles), so
+    `fit.st_engine_speed` maps the wanted ratio to the engine value, `1 + 1.25 × (ratio − 1)`, capped
+    at 1.35 (tts version 6).
   - `fit.place_clips` lets a line run `spill` = 0.5 s past its slot untouched (the next line starts
     late and the timeline catches up at the next gap); only a longer overrun is stretched, to fit
     `avail + spill`, and stretches under 8 % are skipped (`min_stretch` 1.03 → 1.08).
@@ -460,6 +464,72 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
   price is drift: in continuous speech the dub starts up to ~1 s after the original line and catches
   up at the next pause. Lines far over their syllable budget (the LLM failed to shorten them) now
   spill instead of being rushed; a third shortening pass in translate is the deferred follow-up.
+
+### ADR-029: Pauses between lines and budgets for a natural pace
+- **Context:** The `st` dub sounded breathless. The speaker on the test clip pauses a median 0.34 s
+  between sentences; the dub had 0.05 s at 25 of 27 joins. Three causes: Parakeet sentence ends run
+  into the next sentence, so the pause was inside the slot and budgeted as speaking time
+  (`snap_to_speech` ran only for Whisper and subtitles); `set_budgets` assumed every line would be
+  sped up 1.2× (`fill = max_speed × 0.96`) while the prompt asks for lines close to `max_syl`, so
+  translations were systematically long and the dub drifted ~1 s late; and `place_clips` glued a
+  late line to the previous one with `min_gap` 0.05.
+- **Decision:**
+  - `snap_to_speech` runs for every ASR source (asr version 4).
+  - `set_budgets` keeps `PAUSE_RESERVE` 0.3 s of the slot for the pause (never cutting into the
+    spoken part of the line) and assumes only 40 % of the allowed speed-up:
+    `fill = 1 + (min(max_speed, 1.3) − 1) × 0.4` (1.1 by default). Translate version 14.
+  - `place_clips` keeps `BREATH` 0.25 s between a line that overran and the next.
+  - The style rule of the prompt names the concessive calque «як би ви не …» → «хоч як ви …».
+- **Consequences:** Measured in `tests/pace.py` (pauses, late start). Shorter translations also mean
+  fewer stretched lines and less drift; the cost is a one-time re-run of asr → mux for old folders.
+
+### ADR-030: Spectrum match of the dub to the original speaker
+- **Context:** Against the separated vocals the StyleTTS2 voice measured +6 dB at 80–160 Hz and
+  −3 … −9 dB from 315 Hz to 11.5 kHz: boomy and dull, sitting apart from the background.
+- **Decision:** `audio.match_spectrum` compares the long-term spectra of the louder frames of the
+  dub and of `vocals.wav` in 1/3-octave bands (80 Hz–10 kHz), clamps the difference to ±6 dB and
+  applies it as a zero-phase FIR before loudness matching. Only when the source was separated
+  (without separation the reference would contain music). Mix version 3.
+- **Consequences:** The dub takes the microphone's tonal balance, not its reverb or noise. The clamp
+  keeps the TTS from being pushed into hiss above its own bandwidth.
+
+### ADR-031: One pronunciation per name
+- **Context:** The LLM fills the `tts` field of each line on its own, so the same name came out
+  differently from line to line: «ел ем студіо», «ель ем студіо», «ел-ем студіо». The roundtrip check
+  showed the loose forms slurred (the ASR heard «лмстіо» five times) while textnorm's hyphenated
+  letter spelling was heard as «LM Studio» six times out of seven.
+- **Decision:** `translate.unify_pronunciations` runs after all translation passes. For every Latin
+  term in `uk` it finds the pronunciation inside `tts` (the span between the neighbouring Cyrillic
+  words). A term that contains an acronym (`LM`, `MLX`, `API`, `PC`) takes textnorm's spelling in
+  every line; any other name that occurs in several lines takes the most frequent LLM spelling.
+- **Consequences:** Names sound the same throughout a video. On the test clip 6 lines were changed.
+  Replacements within one line are applied right to left, so two names in a line keep their offsets.
+  `_clean_tts` also drops an LLM `tts` that contains letters of another script (Gemma occasionally
+  emits a CJK character mid-word); the deterministic normalizer then reads the subtitle text.
+
+### ADR-032: Prompt revision for length, spoken style and consistency
+- **Context:** On the test clip 23 of 28 lines came back over budget and went through two shortening
+  passes that cut facts («Це те саме, що й нижче» lost what to click). Four lines in a row began with
+  «Тож», two neighbours began with the same phrase, the brief chose «ти» for a tutorial, and version
+  numbers were read «три кома шість». LLMs do not count syllables; they count words reasonably well.
+- **Decision:**
+  - Every line carries `max_words` (= `max_syl` / 2.4) next to `max_syl`; the length rule says "at
+    most max_words, shorter is fine", not "close to max_syl", and gives the order in which to condense.
+  - New rules: spoken style (short sentences, verbs instead of genitive chains, no participial
+    constructions, spoken connectives) and continuity (no two neighbouring lines starting with the
+    same word, no phrase repeated from the previous line, varied connectives). English idiom examples
+    moved to `LANG_RULES["en"]`.
+  - The brief gets a `style` field (register, humour, how the speaker addresses the viewer), a rule
+    for `address` («ви» for an audience, «ти» only between close people; default «ви»), and a `say`
+    pronunciation per Latin glossary name, which `unify_pronunciations` uses first (ADR-031).
+  - `SHORTEN_SYSTEM` sees the neighbouring lines, the summary and style, the syllable surplus and
+    `max_words`, cuts in a fixed order (fillers → repetition → synonyms → rebuild) and never drops
+    facts, labels or the object of an instruction; the second pass is told it is the second pass.
+    A rewrite is rejected by `translate.lost_facts` when a quoted label, a number or a Latin name of
+    the previous version is missing.
+  - The `tts` rule spells abbreviations with hyphens and versions digit by digit. Translate version 15.
+- **Consequences:** Fewer and safer shortenings; a consistent voice across lines. Measured by the number
+  of lines sent to shortening, repeated line starts and a manual read of the 28 lines.
 
 ---
 
@@ -501,7 +571,7 @@ Tools: `tests/roundtrip.py` (intelligibility), `tests/pace.py` (syl/s), and samp
 | Option | Meaning |
 |---|---|
 | `--voice` | `st`, `st:<name>`, `duo:st[:m,f]`, `clone`, `clone:file`, `omni:<desc>`, `duo`, presets, `duo:a,b` |
-| `--emotion [K]` | StyleTTS2 takes the original intonation (0–1, default 0.8) |
+| `--emotion [K]` | StyleTTS2 takes the original intonation (0–1, default 1.0) |
 | `--from LANG`, `--subs FILE`, `--subs-lang LANG` | source language / existing subtitles |
 | `--llm M` | MLX model, `ollama:<m>`, or `claude|opencode|codex|gemini[:model]` (env `UADUB_LLM`) |
 | `--review`, `--review-with H[:M]`, `--redo review` | human pause / agent review (env `UADUB_REVIEW_WITH`) |

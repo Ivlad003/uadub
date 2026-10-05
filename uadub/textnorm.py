@@ -154,6 +154,19 @@ _ABBREV = [
 ]
 
 
+_VERSION = re.compile(r"([A-Za-z][A-Za-z0-9]*\s+)(\d+)\.(\d+)(?!\d)(?!\.\d)")
+
+
+def _version_words(m: re.Match) -> str:
+    """«Qwen 3.6», «Python 3.12»: a version after a Latin name is read digit group by digit group."""
+    if num2words is None:
+        return m.group(0)
+    try:
+        return m.group(1) + " ".join(num2words(int(g), lang="uk") for g in m.groups()[1:])
+    except Exception:
+        return m.group(0)
+
+
 def _number_words(m: re.Match) -> str:
     raw = m.group(1).replace(",", ".")
     if num2words is None:
@@ -174,6 +187,7 @@ def to_speech_text(text: str) -> str:
     t = _THOUSANDS.sub("", t)
     for pattern, repl in _CURRENCY:
         t = pattern.sub(repl, t)
+    t = _VERSION.sub(_version_words, t)
     t = _NUMBER.sub(_number_words, t)
     for sym, word in _SYMBOLS.items():
         t = t.replace(sym, word)

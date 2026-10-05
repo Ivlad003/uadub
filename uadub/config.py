@@ -178,7 +178,7 @@ class Options:
         }[stage]
         fp = {k: getattr(self, k) for k in keys}
         if stage == "asr":
-            fp["version"] = 3  # snap-to-speech + per-line speaker pitch/gender for Whisper/subtitle timings
+            fp["version"] = 4  # snap-to-speech for every ASR (Parakeet ends hid the pauses, ADR-029)
         if stage == "asr" and self.subs and Path(self.subs).exists():
             import hashlib
 
@@ -186,14 +186,14 @@ class Options:
         if stage == "tts":
             from .stress import default_dict_paths, dict_fingerprint
 
-            fp["version"] = 5 if self.engine == "st" else 3  # st: pace band in st_speed (ADR-028)
+            fp["version"] = 6 if self.engine == "st" else 3  # st: pace band + calibrated speed (ADR-028)
             fp["stress_dict_hash"] = dict_fingerprint(default_dict_paths(self.stress_dict, self.work))
             if self.emotion and self.engine == "st":
                 fp["emotion"] = self.emotion  # only when on, so existing runs keep their cache
         if stage == "mix":
-            fp["version"] = 2  # spill tolerance, no re-stretch of fitted lines (ADR-028)
+            fp["version"] = 3  # breath between lines (ADR-029), spectrum match (ADR-030)
         if stage == "translate":
-            fp["version"] = 13  # bump when prompts/budgets change → old runs re-translate
+            fp["version"] = 15  # bump when prompts/budgets change → old runs re-translate
             fp["engine"] = self.engine
             fp["speaker_gender"] = self.speaker_gender
             if self.domain:

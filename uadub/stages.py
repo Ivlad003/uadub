@@ -12,7 +12,7 @@ import numpy as np
 
 from . import audio as A
 from .config import CACHE_DIR, SYLLABLE_RATE, Options
-from .fit import MAX_RATE, MIN_RATE, SPILL, pace_cap, place_clips, st_speed, target_duration
+from .fit import MAX_RATE, MIN_RATE, SPILL, pace_cap, place_clips, st_engine_speed, st_speed, target_duration
 from .segments import assign_slots, build_units, merge_tokens_to_words, slot
 from .srt import make_cues, write_srt
 
@@ -168,13 +168,13 @@ def stage_asr(opt: Options) -> None:
             sentences = _whisper_sentences(opt, w / "asr16k.wav")
         (w / "asr16k.wav").unlink(missing_ok=True)
         log(f"   • розпізнано {len(sentences)} речень, {sum(len(s['words']) for s in sentences)} слів")
-    if opt.subs or "parakeet" not in opt.asr_model:
-        # Whisper word times and subtitle cues are approximate → snap them to the actual speech
-        from .segments import snap_to_speech
+    # Whisper word times and subtitle cues are approximate, and Parakeet sentence ends run into the
+    # next sentence (hiding the speaker's pauses) → snap every source to the actual speech (ADR-029)
+    from .segments import snap_to_speech
 
-        voice = _voice_src(w)
-        y, sr = A.read(voice, sr=16000, mono=True)
-        log(f"   • уточнено межі {snap_to_speech(sentences, y, sr)} реплік за звуком")
+    voice = _voice_src(w)
+    y, sr = A.read(voice, sr=16000, mono=True)
+    log(f"   • уточнено межі {snap_to_speech(sentences, y, sr)} реплік за звуком")
     _tag_speaker_gender(w, sentences)
     save_json(w, "transcript.json", sentences)
 
@@ -303,7 +303,7 @@ def _st_fit(eng, text: str, voice: str, plain: str, slot_s: float, max_speed: fl
     cap = min(ST_MAX_SPEED, max(max_speed, 1.0) + 0.1)
     speed = st_speed(length, syllables(plain), slot_s, max_speed=cap)
     if speed > 1.0:
-        y = eng.synth(text, voice, speed, style=style)
+        y = eng.synth(text, voice, st_engine_speed(speed), style=style)
     return y
 
 
@@ -482,11 +482,14 @@ def stage_mix(opt: Options) -> None:
         sped += p["speed"] > 1.0
         overflow += u["dub_end"] > u["slot_end"] + SPILL + 0.05
 
+    ref = A.read(A.existing(w / "vocals.wav"), sr=sr)[0] if separated else bg
+    if separated:  # timbre: tilt the TTS towards the original speaker's spectrum (ADR-030)
+        voice = A.match_spectrum(voice, ref.mean(axis=1) if ref.ndim == 2 else ref, sr)
+
     # loudness: dub speaks as loud as the original speech did (one target for all parts of a long video)
     if opt.loudness_target is not None:
         target = opt.loudness_target
     else:
-        ref = A.read(A.existing(w / "vocals.wav"), sr=sr)[0] if separated else bg
         target = A.loudness(ref, sr)
         target = float(np.clip(target if target is not None else -18.0, -26.0, -12.0))
     measured = A.loudness(voice, sr)

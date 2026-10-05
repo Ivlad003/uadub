@@ -24,18 +24,19 @@ SYSTEM = """You are an expert audiovisual translator who writes Ukrainian voice-
 Translate {src_name} speech lines (field "src") into natural, idiomatic, modern spoken Ukrainian.
 
 How to work:
-A. Meaning first. Before translating, read "transcript_context" — the original transcript around these lines — and the summary, and understand what the speaker means and why: the argument, the logic between sentences, the jokes. Translate sense for sense, never word for word: restructure sentences, change word order, replace constructions that sound foreign in Ukrainian, make implicit links explicit when needed. A Ukrainian viewer must get the same meaning and the same feeling as an English viewer.
+A. Meaning first. Before translating, read "transcript_context" — the original transcript around these lines — and the summary, and understand what the speaker means and why: the argument, the logic between sentences, the jokes. Translate sense for sense, never word for word: restructure sentences, change word order, replace constructions that sound foreign in Ukrainian, make implicit links explicit when needed. A Ukrainian viewer must get the same meaning and the same feeling as the original viewer.
 B. The transcript comes from automatic speech recognition and can contain misheard words, missing punctuation or broken sentences (e.g. "Quen 3.6" for the model "Qwen 3.6"). Infer what was actually said from the context and translate that.
-C. Idioms, proverbs, set phrases and figures of speech: never translate them literally. Use an established Ukrainian equivalent with the same meaning and register (e.g. "a piece of cake" → «простіше простого», "kill two birds with one stone" → «убити двох зайців одним пострілом», "break the ice" → «розтопити кригу», "beat around the bush" → «ходити околясом», "once in a blue moon" → «раз на сто років», "costs an arm and a leg" → «коштує шалені гроші», "the ball is in your court" → «тепер слово за тобою», "hit the nail on the head" → «влучити в саму точку»). The same applies to set connective phrases: "when it comes to" → «коли йдеться про», "at the end of the day" → «зрештою», "that being said" → «утім», "as a matter of fact" → «насправді»; spoken fillers ("kind of", "you know", "like", "basically") are usually dropped. If there is no Ukrainian idiom, express the meaning naturally. Adapt jokes and wordplay so they work in Ukrainian.
+C. Idioms, proverbs, set phrases, jokes and wordplay: never translate them literally — use an established Ukrainian equivalent with the same meaning and register, or express the meaning naturally if there is none. Spoken fillers are usually dropped.
 
 Rules:
 1. Output exactly one translation per input line with the same "id". Never merge, split, skip or reorder lines. If a sentence continues across lines, break the Ukrainian at a natural point so each line still matches its own timing.
-2. Timing: every line has "max_syl" — the maximum number of Ukrainian syllables (vowel letters а е є и і ї о у ю я) that fits the original time slot. Translate the full meaning and use the available length: a good line is usually close to max_syl. Only if a faithful translation is longer, condense it just enough: drop filler words and repetitions, use shorter synonyms, simplify syntax — never drop facts, names, numbers or instructions. Never pad short lines.
-3. Style: clear, spoken and pleasant to listen to; keep the tone (casual, formal, humorous). Use correct literary Ukrainian, no Russianisms, surzhyk or word-for-word calques. Keep a consistent form of address (ти/ви).
-4. {gender_rule}
-5. {terms_rule}
-6. If "uk" contains digits, symbols (% $ € + / & @ °), Latin letters or abbreviations, also add "tts": the same line fully spelled out exactly as it should be pronounced in Ukrainian — numbers as words in the correct case and gender, symbols and units expanded, proper names in Cyrillic the way Ukrainian speakers say them (e.g. "GitHub" → "ґітхаб", "LM Studio" → "ел-ем студіо", "Hugging Face" → "хаґінґ фейс", "API" → "ей-пі-ай", "3.5%" → "три з половиною відсотка"). "tts" must contain only Cyrillic words and punctuation — no Latin letters, digits or stress marks. Otherwise omit "tts".
-7. Do not add stress marks (´, +) anywhere — stress is handled separately.
+2. Length: every line has "max_syl" (Ukrainian syllables = vowel letters а е є и і ї о у ю я) and "max_words" — what fits the time of the original line at a natural pace. Stay within them: at most max_words words. Shorter is fine when nothing is lost; never pad. If the faithful translation does not fit, condense in this order: drop fillers and connectives, drop what the neighbouring line already says, use shorter synonyms, simplify the syntax. Never drop facts, names, numbers, on-screen labels or the object of an instruction (what to click, where to go).
+3. Spoken style. These lines are spoken aloud, not read: short sentences; verbs instead of chains of nouns in the genitive («процесу завантаження моделей» → «як завантажити модель»); no participial constructions («натиснувши», «обраний користувачем») — use a clause with a verb; a natural spoken word order; the connectives people actually say (тож, отже, а ще, далі, тепер). Keep the tone of the original (casual, formal, humorous). Use correct literary Ukrainian, no Russianisms, surzhyk or word-for-word calques (e.g. concessive «як би ви не зробили» is a calque — write «хоч як ви зробите» / «хоч би як ви зробили»; «в кінці кінців» → «зрештою»; «приймати участь» → «брати участь»). Use the form of address given in "address" (ти/ви) in every line.
+4. The lines are one continuous speech: read your own "previous" translations and do not start two neighbouring lines with the same word, do not repeat a phrase the previous line already used (unless the original repeats it), and vary the connectives.
+5. {gender_rule}
+6. {terms_rule}
+7. If "uk" contains digits, symbols (% $ € + / & @ °), Latin letters or abbreviations, also add "tts": the same line fully spelled out exactly as it should be pronounced in Ukrainian — numbers as words in the correct case and gender, symbols and units expanded, proper names in Cyrillic the way Ukrainian speakers say them. Abbreviations are spelled letter by letter with hyphens: "API" → «ей-пі-ай», "LM Studio" → «ел-ем студіо», "MLX" → «ем-ел-ікс», "PC" → «пі-сі». Version numbers are read digit group by digit group: "Qwen 3.6" → «квен три шість», "Python 3.12" → «пайтон три дванадцять»; other numbers normally: "3.5%" → «три з половиною відсотка», "GitHub" → «ґітхаб», "Hugging Face" → «хаґінґ фейс». Use the pronunciations given in the glossary. "tts" must contain only Cyrillic words and punctuation — no Latin letters, digits or stress marks. Otherwise omit "tts".
+8. Do not add stress marks (´, +) anywhere — stress is handled separately.
 {lang_rules}{glossary}
 Return ONLY a JSON object: {{"lines": [{{"id": <int>, "uk": "<subtitle text>", "tts": "<optional speakable text>"}}]}}
 Each line object has only "id", "uk" and optionally "tts" — never repeat "src", "max_syl", "speaker" or other input fields."""
@@ -46,14 +47,16 @@ DOMAIN_TERMS_RULE = """Audience: specialists in {domain}. Use the terminology Uk
 
 BRIEF_SYSTEM = """You prepare a translation brief for dubbing a {src_name} video into Ukrainian.
 Read the whole transcript (it comes from speech recognition and may contain misheard words), understand the speaker's line of thought, and return ONLY JSON:
-{"summary": "<3-5 sentences in Ukrainian: topic, genre, audience, tone, and the main line of argument or story>",
+{"summary": "<3-5 sentences in Ukrainian: topic, genre, audience, and the main line of argument or story>",
+ "style": "<1-3 sentences in Ukrainian: the speaker's register and manner — casual or formal, jokes, how they address the viewer, typical sentence length — so the translator can keep the same voice>",
  "domain": "<field of the video in Ukrainian, 1-4 words: «IT / розробка ПЗ», «медицина», «фінанси», «кулінарія», «загальна тема» …>",
  "speaker_gender": "male|female|unknown",
  "address": "ти|ви",
  "characters": [{"name": "<name as written in the transcript>", "uk": "<Ukrainian form>", "gender": "male|female|unknown"}],
- "glossary": [{"src": "<term/name/recurring phrase>", "uk": "<recommended Ukrainian rendering; keep brand names as is>"}],
+ "glossary": [{"src": "<term/name/recurring phrase>", "uk": "<recommended Ukrainian rendering; keep brand names as is>", "say": "<for names and abbreviations kept in Latin: how a Ukrainian speaker pronounces them, in Cyrillic letters, abbreviations letter by letter with hyphens — ел-ем студіо, ей-пі-ай, хаґінґ фейс; omit for Ukrainian terms>"}],
  "idioms": [{"src": "<idiom, proverb, set phrase, joke or cultural reference as it appears>", "uk": "<Ukrainian equivalent with the same meaning and register, not a literal translation>"}],
  "asr_fixes": [{"heard": "<misrecognised word in the transcript>", "meant": "<what was actually said>"}]}
+"address": a speaker talking to an audience (tutorials, lectures, presentations, reviews, news) addresses viewers as «ви»; «ти» only when the speech is a dialogue between people who are close (family, friends, lovers, children) or the speaker clearly talks to one close person.
 {glossary_rule} List named characters (people) in "characters"; empty list if none. List every idiom or figure of speech in "idioms" (empty list if none) and obvious speech-recognition errors in "asr_fixes".{lang_rules}"""
 
 STRESS_SYSTEM = """You are a Ukrainian pronunciation expert. Each item is a word inside a sentence that will be read aloud. The word is a homograph: its stress depends on its meaning or grammatical form. Pick the variant whose stressed vowel (shown in UPPERCASE) is correct in this sentence. Examples: зАмок = castle, замОк = lock; Атлас = book of maps, атлАс = fabric; мУка = torment, мукА = flour; рУки = nominative plural (мої рУки), рукИ = genitive singular (немає рукИ); гОри = mountains, з горИ = from the mountain.
@@ -76,17 +79,24 @@ SPELL_SYSTEM = """You prepare Ukrainian dubbing lines for a speech synthesizer t
 Return ONLY JSON: {"lines": [{"id": <int>, "tts": "..."}]}"""
 
 SHORTEN_SYSTEM = """You edit Ukrainian dubbing lines that are too long for their time slots.
-For each line rewrite "uk" so that it has at most "max_syl" syllables (vowel letters а е є и і ї о у ю я), keeping the meaning of "src" and a natural spoken style. Prefer cutting fillers, shorter synonyms and simpler syntax; a short Ukrainian idiom often says more than a long literal phrase. The result must stay a grammatical, complete Ukrainian sentence — never leave half of a set phrase (wrong: «Коли справа стає завантаження»; right: «Коли йдеться про завантаження»).
-Follow the same "tts" rule: if the new "uk" has digits, symbols, Latin letters or abbreviations, add "tts" with everything spelled out as pronounced; otherwise omit it.
+Each line gives "src" (the original), "uk" (the current translation), "over" (how many syllables too long it is; syllables = vowel letters а е є и і ї о у ю я), "max_words" (the word count that fits), and the neighbouring lines "previous" / "next" as they will be spoken. Rewrite "uk" so that it fits: at most "max_words" words.
+Cut in this order: 1) fillers and connectives (тож, отже, просто, власне, насправді); 2) what the previous or next line already says; 3) shorter synonyms; 4) rebuild the sentence with a verb instead of noun chains; a short Ukrainian idiom often says more than a long literal phrase. Never drop facts, names, numbers, on-screen labels in quotes, or the object of an instruction (what to click, where to go) — if nothing else can go, keep those and cut description.
+The result must stay a grammatical, complete, natural spoken Ukrainian sentence in the same style — never leave half of a set phrase (wrong: «Коли справа стає завантаження»; right: «Коли йдеться про завантаження»). Keep the form of address (ти/ви).{attempt}
+Follow the same "tts" rule: if the new "uk" has digits, symbols, Latin letters or abbreviations, add "tts" with everything spelled out as pronounced (abbreviations letter by letter with hyphens, versions digit by digit: «квен три шість»); otherwise omit it.
 Return ONLY JSON: {"lines": [{"id": <int>, "uk": "...", "tts": "..."}]}"""
+
+SHORTEN_RETRY = " This is the second attempt: the previous rewrite was still too long by the given number of syllables, so cut more decisively — rebuild the sentence rather than trimming words."
 
 
 LANG_RULES = {
+    "en": """
+9. English specifics: common idioms and their Ukrainian equivalents — "a piece of cake" → «простіше простого», "kill two birds with one stone" → «убити двох зайців одним пострілом», "break the ice" → «розтопити кригу», "beat around the bush" → «ходити околясом», "once in a blue moon" → «раз на сто років», "costs an arm and a leg" → «коштує шалені гроші», "the ball is in your court" → «тепер слово за тобою», "hit the nail on the head" → «влучити в саму точку». Set connectives: "when it comes to" → «коли йдеться про», "at the end of the day" → «зрештою», "that being said" → «утім», "as a matter of fact" → «насправді». Fillers "kind of", "you know", "like", "basically", "so" at the start of a sentence are dropped.
+""",
     "ko": """
-8. Korean specifics: transliterate Korean personal and place names into Ukrainian by the Kontsevych system (система Концевича), keeping the Korean order (surname first) and exactly the same form every time (e.g. 김 → Кім, 이 → Лі, 박 → Пак, 서울 → Сеул). Render forms of address (오빠, 언니, 형, 누나, 선배, 씨, 님, 아저씨) naturally — by the person's name, a natural Ukrainian address, or a consistent transliteration such as «оппа» — never a clumsy literal «старший брат» each time. Show politeness levels with ти/ви. Drama dialogue is elliptical: restore implied subjects so the Ukrainian sounds natural.
+9. Korean specifics: transliterate Korean personal and place names into Ukrainian by the Kontsevych system (система Концевича), keeping the Korean order (surname first) and exactly the same form every time (e.g. 김 → Кім, 이 → Лі, 박 → Пак, 서울 → Сеул). Render forms of address (오빠, 언니, 형, 누나, 선배, 씨, 님, 아저씨) naturally — by the person's name, a natural Ukrainian address, or a consistent transliteration such as «оппа» — never a clumsy literal «старший брат» each time. Show politeness levels with ти/ви. Drama dialogue is elliptical: restore implied subjects so the Ukrainian sounds natural.
 """,
     "ja": """
-8. Japanese specifics: transliterate names into Ukrainian by the Kovalenko system (система Коваленка), consistently. Render honorific suffixes (-san, -kun, -chan, -senpai) naturally or omit them; show politeness via ти/ви.
+9. Japanese specifics: transliterate names into Ukrainian by the Kovalenko system (система Коваленка), consistently. Render honorific suffixes (-san, -kun, -chan, -senpai) naturally or omit them; show politeness via ти/ви.
 """,
 }
 
@@ -185,6 +195,8 @@ def _clean_tts(uk: str, tts: str) -> str:
     if not tts or tts == uk:
         return ""
     if re.search(r"[A-Za-z0-9]", tts):
+        return ""
+    if re.search(r"[^\W\d_]", re.sub(r"[А-Яа-яІіЇїЄєҐґ\u0301]", "", tts)):  # letters of another script: LLM garbage
         return ""
     return tts
 
@@ -311,12 +323,145 @@ def anglicism_system(domain: str | None) -> str:
     return ANGLICISM_SYSTEM.replace("{fix_rule}", rule)
 
 
-def set_budgets(units: list[dict], *, rate: float, max_speed: float = 1.25) -> None:
-    # The dub may be sped up to `max_speed`, so budget for almost that pace; otherwise fast
-    # speakers get heavily abridged translations.
-    fill = max(1.0, min(max_speed, 1.3) * 0.96)
+_LATIN_TERM = re.compile(r"[A-Za-z](?:[A-Za-z0-9+-]|\.(?=[A-Za-z0-9]))*(?:\s+[A-Za-z](?:[A-Za-z0-9+-]|\.(?=[A-Za-z0-9]))*)*")
+_ACRONYM = re.compile(r"(?<![A-Za-z])[A-Z][A-Z0-9]{1,3}(?![a-z])")  # LM, MLX, API, PC
+_WORD = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)*|\d+(?:[.,]\d+)?")
+
+
+def _norm_word(w: str) -> str:
+    return re.sub(r"[^\w']", "", w.replace("’", "'")).lower()
+
+
+def _span_for_term(uk: str, tts: str, m: re.Match) -> tuple[int, int] | None:
+    """Character span inside `tts` that pronounces the Latin term `m` of `uk`.
+
+    Cyrillic words around the term in `uk` are looked up in `tts`; whatever lies between them is
+    the pronunciation. Returns None when the neighbours cannot be found unambiguously.
+    """
+    before = [_norm_word(w) for w in _WORD.findall(uk[: m.start()])]
+    after = [_norm_word(w) for w in _WORD.findall(uk[m.end():])]
+    toks = [(t.start(), t.end(), _norm_word(t.group())) for t in re.finditer(r"\S+", tts)]
+    lo = 0
+    if before:
+        idx = [i for i, t in enumerate(toks) if t[2] == before[-1]]
+        if len(idx) != 1:
+            return None
+        lo = toks[idx[0]][1]
+    hi = len(tts)
+    if after:
+        idx = [i for i, t in enumerate(toks) if t[2] == after[0] and t[0] >= lo]
+        if not idx:
+            return None
+        hi = toks[idx[0]][0]
+    start, end = lo, hi
+    while start < end and not tts[start].isalpha():
+        start += 1
+    while end > start and not tts[end - 1].isalpha():
+        end -= 1
+    return (start, end) if end > start else None
+
+
+_QUOTED = re.compile(r"[«\"„“”]([^«»\"„“”]+)[»\"“”]")
+_NUMBER_TOKEN = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?(?![\w])")
+
+
+def _plain_quotes(text: str) -> str:
+    return re.sub(r"[\"„“”»«]", "\"", text).lower()
+
+
+def lost_facts(old: str, new: str) -> list[str]:
+    """Facts of `old` (a line) that `new` (its shortened rewrite) no longer contains:
+    quoted on-screen labels, numbers and Latin names. Used to reject a rewrite that cut too much."""
+    lost: list[str] = []
+    hay = _plain_quotes(new)
+    for m in _QUOTED.finditer(old):
+        if f'"{m.group(1).lower()}"' not in hay:
+            lost.append(f"«{m.group(1)}»")
+    for m in _NUMBER_TOKEN.finditer(old):
+        if m.group() not in new:
+            lost.append(m.group())
+    for m in _LATIN_TERM.finditer(old):
+        if m.group().lower() not in new.lower():
+            lost.append(m.group())
+    return lost
+
+
+def glossary_pronunciations(glossary: list[dict]) -> dict[str, str]:
+    """Brief glossary entries with a Cyrillic "say": name → how to pronounce it (stress marks dropped)."""
+    out: dict[str, str] = {}
+    for g in glossary or []:
+        src, say = str(g.get("src") or g.get("en") or "").strip(), str(g.get("say") or "").strip()
+        say = say.replace("+", "").replace("\u0301", "")
+        if src and say and not re.search(r"[A-Za-z0-9]", say) and re.search(r"[А-Яа-яІіЇїЄєҐґ]", say):
+            out[src] = say
+    return out
+
+
+def unify_pronunciations(units: list[dict], pronunciations: dict[str, str] | None = None) -> int:
+    """Make the LLM pronounce each Latin name the same way in every line.
+
+    The model writes «ел ем студіо» in one line and «ель ем студіо» or «ел-ем студіо» in another,
+    which is audible. A name the brief's glossary spelled out ("say") takes that form; a term with an
+    acronym takes textnorm's hyphenated letter spelling; any other Latin term that occurs in several
+    lines takes its most frequent spelling. Returns the number of lines changed.
+    """
+    found: dict[str, list[tuple[dict, int, int, str]]] = {}
+    spelled: dict[str, str] = {}  # lowercased term → as written (case matters for acronyms)
     for u in units:
-        u["max_syl"] = max(3, math.floor(slot(u) * rate * fill))
+        uk, tts = u.get("uk") or "", u.get("tts")
+        if not tts:
+            continue
+        for m in _LATIN_TERM.finditer(uk):
+            span = _span_for_term(uk, tts, m)
+            if span:
+                term = re.sub(r"\s+", " ", m.group())
+                spelled.setdefault(term.lower(), term)
+                found.setdefault(term.lower(), []).append((u, *span, tts[span[0] : span[1]]))
+    changed = 0
+    edits: dict[int, tuple[dict, list[tuple[int, int, str]]]] = {}
+    key = lambda text: re.sub(r"\s+", " ", text.lower())  # noqa: E731
+    given = {k.lower(): v for k, v in (pronunciations or {}).items()}
+    for term, occurrences in found.items():
+        if term in given:  # the brief said how this name is pronounced
+            canonical = given[term]
+        elif _ACRONYM.search(spelled[term]):
+            # letter names: textnorm's hyphenated spelling («ел-ем студіо») is what StyleTTS2 says
+            # clearly; the LLM's loose «ел ем» / «ель ем» comes out slurred
+            canonical = to_speech_text(spelled[term])
+        elif len(occurrences) < 2:
+            continue
+        else:
+            counts: dict[str, int] = {}
+            for _, _, _, text in occurrences:
+                counts[key(text)] = counts.get(key(text), 0) + 1
+            best = max(counts, key=lambda k: (counts[k], -list(counts).index(k)))
+            canonical = next(text for _, _, _, text in occurrences if key(text) == best)
+        best = key(canonical)
+        for u, start, end, text in occurrences:
+            if key(text) == best:
+                continue
+            repl = canonical[0].upper() + canonical[1:] if text[0].isupper() else canonical.lower()
+            edits.setdefault(id(u), (u, []))[1].append((start, end, repl))
+    for u, spans in edits.values():  # right to left, so earlier spans keep their offsets
+        for start, end, repl in sorted(spans, key=lambda e: -e[0]):
+            u["tts"] = u["tts"][:start] + repl + u["tts"][end:]
+        changed += 1
+    return changed
+
+
+PAUSE_RESERVE = 0.3  # seconds of the slot kept for the pause before the next line
+SYL_PER_WORD = 2.4  # average spoken Ukrainian
+
+
+def set_budgets(units: list[dict], *, rate: float, max_speed: float = 1.25, pause: float = PAUSE_RESERVE) -> None:
+    # Budget for a natural pace with a breath before the next line. A little of the allowed
+    # speed-up is assumed (40 % of it), otherwise fast speakers get heavily abridged translations;
+    # the rest stays in reserve, so lines are rarely sped up at all (ADR-029).
+    fill = 1.0 + (min(max_speed, 1.3) - 1.0) * 0.4
+    for u in units:
+        spoken = max(u["end"] - u["start"], slot(u) - pause)
+        u["max_syl"] = max(3, math.floor(spoken * rate * fill))
+        u["max_words"] = max(2, round(u["max_syl"] / SYL_PER_WORD))  # LLMs count words, not syllables
 
 
 def translate_units(llm: LLM, units: list[dict], *, rate: float, gender: str | None,
@@ -347,9 +492,11 @@ def translate_units(llm: LLM, units: list[dict], *, rate: float, gender: str | N
     glossary = (brief.get("glossary") or []) + _load_glossary(glossary_path)
     gl_text = ""
     if glossary:
-        gl_text = "\nGlossary (use these renderings consistently):\n" + "\n".join(
-            f'- {g.get("src") or g.get("en")} → {g.get("uk")}' for g in glossary
-            if (g.get("src") or g.get("en")) and g.get("uk"))
+        says = glossary_pronunciations(glossary)
+        gl_text = "\nGlossary (use these renderings consistently; «say» = how to pronounce it in tts):\n" + "\n".join(
+            f'- {g.get("src") or g.get("en")} → {g.get("uk")}'
+            + (f' (say: {says[g.get("src") or g.get("en")]})' if (g.get("src") or g.get("en")) in says else "")
+            for g in glossary if (g.get("src") or g.get("en")) and g.get("uk"))
     idioms = [i for i in (brief.get("idioms") or []) if isinstance(i, dict) and i.get("src") and i.get("uk")]
     if idioms:
         gl_text += "\nIdioms and figures of speech in this video (use these Ukrainian equivalents, not literal translations):\n" + \
@@ -364,7 +511,8 @@ def translate_units(llm: LLM, units: list[dict], *, rate: float, gender: str | N
             f'- {c["name"]} → {c.get("uk") or c["name"]} ({c.get("gender", "unknown")})' for c in chars)
     system = SYSTEM.format(gender_rule=_gender_rule(gender), glossary=gl_text, src_name=src_name,
                            lang_rules=lang_rules, terms_rule=terms_rule(expert))
-    context = {k: brief[k] for k in ("summary", "address") if brief.get(k)}
+    context = {k: brief[k] for k in ("summary", "style", "address") if brief.get(k)}
+    context.setdefault("address", "ви")
     if expert:
         context["domain"] = expert  # + transcript window per chunk
 
@@ -381,11 +529,14 @@ def translate_units(llm: LLM, units: list[dict], *, rate: float, gender: str | N
             break
         log(f"   • скорочення задовгих реплік ({len(too_long)}), прохід {round_no}")
         for i in range(0, len(too_long), CHUNK):
-            _shorten(llm, too_long[i : i + CHUNK])
+            _shorten(llm, too_long[i : i + CHUNK], units=units, context=context, attempt=round_no)
 
     fixed = fix_anglicisms(llm, units, glossary=glossary, domain=expert, log=log)
     if expert:  # many on-screen labels stay in Latin: make sure each is spelled for the voice
         spell_latin(llm, units, log=log)
+    same = unify_pronunciations(units, glossary_pronunciations(glossary))
+    if same:
+        log(f"   • однакова вимова назв: виправлено {same} реплік")
     stats = resolve_homographs(llm, units, log=log) if stress == "auto" else {}
     return {"brief": brief, "gender": gender, "homographs": stats, "anglicism_fixes": fixed,
             "domain": field or None, "domain_mode": bool(domain)}
@@ -610,7 +761,7 @@ def _translate_chunk(llm, system, context, units, chunk, by_id, fixed_gender=Non
     prev = [{"src": u["text"], "uk": u.get("uk", "")} for u in units[max(0, first - 6) : first]]
     nxt = [u["text"] for u in units[first + len(chunk) : first + len(chunk) + 4]]
     payload = {**context, "transcript_context": _context_window(units, first, len(chunk), edge), "previous": prev,
-               "lines": [{"id": u["id"], "src": u["text"], "max_syl": u["max_syl"],
+               "lines": [{"id": u["id"], "src": u["text"], "max_syl": u["max_syl"], "max_words": u.get("max_words"),
                           **({"speaker": u["gender"]} if u.get("gender") and not fixed_gender else {})}
                          for u in chunk],
                "next": nxt}
@@ -648,11 +799,22 @@ def _translate_chunk(llm, system, context, units, chunk, by_id, fixed_gender=Non
         by_id[uid]["untranslated"] = True
 
 
-def _shorten(llm: LLM, items: list[dict]) -> None:
-    payload = {"lines": [{"id": u["id"], "src": u["text"], "uk": u["uk"], "syl": _syl(u),
-                          "max_syl": u["max_syl"]} for u in items]}
+def _shorten(llm: LLM, items: list[dict], *, units: list[dict] | None = None, context: dict | None = None,
+             attempt: int = 1) -> None:
+    units = units or items
+    pos = {id(u): i for i, u in enumerate(units)}
+
+    def neighbour(u: dict, step: int) -> str:
+        i = pos.get(id(u), -1) + step
+        return str(units[i].get("uk") or units[i]["text"]) if 0 <= i < len(units) else ""
+
+    payload = {**{k: v for k, v in (context or {}).items() if k in ("summary", "style", "address")},
+               "lines": [{"id": u["id"], "src": u["text"], "uk": u["uk"], "over": _syl(u) - u["max_syl"],
+                          "max_words": u.get("max_words") or max(2, round(u["max_syl"] / SYL_PER_WORD)),
+                          "previous": neighbour(u, -1), "next": neighbour(u, 1)} for u in items]}
+    system = SHORTEN_SYSTEM.replace("{attempt}", SHORTEN_RETRY if attempt > 1 else "")
     try:
-        data = _ask(llm, SHORTEN_SYSTEM, json.dumps(payload, ensure_ascii=False), max_tokens=400 + 260 * len(items))
+        data = _ask(llm, system, json.dumps(payload, ensure_ascii=False), max_tokens=400 + 260 * len(items))
     except RuntimeError:
         return
     by_id = {u["id"]: u for u in items}
@@ -663,7 +825,7 @@ def _shorten(llm: LLM, items: list[dict]) -> None:
             continue
         uk_new = str(item.get("uk", "")).strip()
         cand = {"uk": uk_new, "tts": _clean_tts(uk_new, str(item.get("tts") or "").strip())}
-        if cand["uk"] and syllables(to_speech_text(cand["tts"] or cand["uk"])) < _syl(u):
+        if cand["uk"] and syllables(to_speech_text(cand["tts"] or cand["uk"])) < _syl(u) and not lost_facts(u["uk"], cand["uk"]):
             u["uk"] = cand["uk"]
             if cand["tts"]:
                 u["tts"] = cand["tts"]

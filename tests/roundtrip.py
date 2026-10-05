@@ -5,12 +5,15 @@ from pathlib import Path
 
 from parakeet_mlx import from_pretrained
 
+from uadub.textnorm import to_speech_text
 from uadub.translate import speech_text
 
 video, work = Path(sys.argv[1]), Path(sys.argv[2])
 wav = Path(tempfile.mkdtemp()) / "uk.wav"
 subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-map", "0:a:0", "-ac", "1", "-ar", "16000", str(wav)], check=True)
 heard = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3").transcribe(str(wav)).text
+# the ASR writes names and numbers as it likes («LM Studio», «3.6»); compare what was pronounced
+heard_norm = to_speech_text(heard.replace("<unk>", " "))
 said = " ".join(speech_text(u) for u in json.loads((work / "units.json").read_text()))
 
 
@@ -29,7 +32,7 @@ def dist(a: str, b: str) -> int:
     return prev[-1]
 
 
-a, b = norm(said), norm(heard)
+a, b = norm(said), norm(heard_norm)
 wa, wb = a.split(), b.split()
 print("HEARD:", heard)
 print(f"CER = {dist(a, b) / max(1, len(a)):.3f}   WER = {dist(wa, wb) / max(1, len(wa)):.3f}")

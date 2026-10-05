@@ -91,7 +91,7 @@ its style vector. uadub takes the prosody half from the original line's voice, c
 separated vocal track.
 
 ```bash
-uadub video.mp4 --voice st --emotion          # strength 0.8
+uadub video.mp4 --voice st --emotion          # strength 1.0
 uadub video.mp4 --voice st --emotion 1.0      # 0…1; more = closer to the original's manner
 uadub drama.mkv --from ko --voice duo:st --emotion
 ```
@@ -186,6 +186,18 @@ The translation runs on a local LLM (Gemma 4 26B-A4B by default) with these rule
   lines are spoken a little faster, and no line is ever rushed past the ceiling to fit its slot. A line
   may instead run up to half a second into the following pause; the next line starts a touch later and
   the timeline catches up at the next gap. Only longer overruns are time-stretched, and gently.
+- **Room to breathe.** Line boundaries are tightened to the actual speech, so the speaker's pauses stay
+  pauses: the translation is budgeted for the spoken part of the line plus a natural pace, and a line
+  that runs late still leaves a quarter-second breath before the next one.
+- **Names sound the same.** A product name or acronym is pronounced the same way in every line: acronyms
+  are spelled letter by letter by uadub itself, other names follow the most common form the translator used.
+- **Timbre.** When the source was separated, the dub's tonal balance is matched to the original
+  speaker's microphone (a gentle, ±6 dB spectral correction), so it sits in the background instead of
+  sounding boomy and dull next to it.
+- **One voice.** The brief records the speaker's register (casual or formal, jokes, how they address the viewer),
+  and the translator is asked for spoken sentences: short, verb-driven, no two neighbouring lines starting
+  the same way. Lines that still run long are condensed in a fixed order, and a rewrite that drops a label,
+  a number or a name is rejected.
 - **Grammar.** Speaker gender (detected from voice pitch) drives я зробив/я зробила. A glossary keeps
   terms consistent; add your own with `--glossary terms.txt` (`English = Українська` per line).
 
@@ -322,7 +334,7 @@ Ukrainian subtitles can simply be voiced with `--subs drama.uk.srt --subs-lang u
 |---|---|
 | `-o FILE` | output file (default `<name>.uk.mp4`) |
 | `--voice V` | voice, see [Choosing a voice](#choosing-a-voice) and `--list-voices` |
-| `--emotion [K]` | StyleTTS2 voices take the intonation of each original line, K = 0…1 (0.8 without a number) |
+| `--emotion [K]` | StyleTTS2 voices take the intonation of each original line, K = 0…1 (1.0 without a number) |
 | `--steps N` | OmniVoice quality steps: 16 (default, ~real time) or 32 (slower, cleaner) |
 | `--from LANG` | language of the video (`en` default, `ko`, `ja`, …) |
 | `--subs FILE`, `--subs-lang LANG` | use existing subtitles instead of recognition |

@@ -250,6 +250,60 @@ def time_stretch(y: np.ndarray, sr: int, speed: float) -> np.ndarray:
     return out[0]
 
 
+def _ltas(y: np.ndarray, sr: int, nfft: int) -> np.ndarray:
+    """Long-term average power spectrum of the louder frames (speech, not pauses)."""
+    y = y.mean(axis=1) if y.ndim == 2 else y
+    m = len(y) // nfft
+    if m == 0:
+        return np.ones(nfft // 2 + 1)
+    frames = y[: m * nfft].reshape(m, nfft)
+    rms = np.sqrt((frames**2).mean(axis=1) + 1e-12)
+    frames = frames[rms > rms.max() * 10 ** (-40 / 20)]
+    spec = np.abs(np.fft.rfft(frames * np.hanning(nfft), axis=1)) ** 2
+    return spec.mean(axis=0) + 1e-12
+
+
+def match_spectrum(y: np.ndarray, ref: np.ndarray, sr: int, *, max_db: float = 6.0, fmin: float = 80.0,
+                   fmax: float = 10000.0, taps: int = 1023) -> np.ndarray:
+    """Tilt the dub's long-term spectrum towards the original speaker's (zero-phase FIR).
+
+    TTS voices come out darker and boomier than a real microphone; a static, gently smoothed
+    correction (1/3-octave bands, clamped to ±`max_db`) makes the dub clearer and sits it in the
+    original's background. Nothing is done above `fmax` (24 kHz TTS has no content there).
+    """
+    from scipy.signal import firwin2
+
+    nfft = 2048
+    mono = y.mean(axis=1) if y.ndim == 2 else y
+    if mono.size < nfft * 4 or ref.size < nfft * 4:
+        return y
+    f = np.fft.rfftfreq(nfft, 1 / sr)
+    diff = 10 * np.log10(_ltas(ref, sr, nfft) / _ltas(mono, sr, nfft))  # dB the dub lacks per bin
+    edges = fmin * 2 ** (np.arange(0, 32) / 3)
+    edges = edges[edges < min(fmax, sr / 2)]
+    freqs, gains = [0.0, fmin * 0.7], [0.0, 0.0]
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        sel = (f >= lo) & (f < hi)
+        if sel.any():
+            freqs.append(float(np.sqrt(lo * hi)))
+            gains.append(float(np.clip(diff[sel].mean(), -max_db, max_db)))
+    freqs += [min(fmax, sr / 2 * 0.95), sr / 2]
+    gains += [0.0, 0.0]
+    gains_db = np.interp(freqs, freqs, gains)
+    taps = taps | 1
+    fir = firwin2(taps, np.array(freqs) / (sr / 2), 10 ** (np.array(gains_db) / 20))
+    pad = taps // 2
+    out = np.empty_like(y)
+    cols = [y] if y.ndim == 1 else [y[:, c] for c in range(y.shape[1])]
+    for i, col in enumerate(cols):
+        full = np.convolve(col, fir.astype(np.float32), mode="full")[pad : pad + len(col)]
+        if y.ndim == 1:
+            out = full.astype(np.float32)
+        else:
+            out[:, i] = full
+    return out
+
+
 def loudness(y: np.ndarray, sr: int) -> float | None:
     import pyloudnorm as pyln
 

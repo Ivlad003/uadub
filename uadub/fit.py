@@ -6,6 +6,7 @@ from __future__ import annotations
 # drawn-out, above it rushed. Lines are brought up to the floor and never pushed past the ceiling.
 MIN_RATE, MAX_RATE = 5.0, 7.5
 SPILL = 0.5  # seconds a line may run past its slot before the mix stretches it
+BREATH = 0.25  # pause kept between a line that overran and the next one (speakers pause ~0.3 s)
 
 
 def pace_cap(length: float, syl: int, max_speed: float, *, max_rate: float = MAX_RATE) -> float:
@@ -20,7 +21,7 @@ def place_clips(
     lengths: list[float],
     *,
     max_speed: float = 1.25,
-    min_gap: float = 0.05,
+    min_gap: float = BREATH,
     min_stretch: float = 1.08,
     spill: float = SPILL,
     caps: list[float] | None = None,
@@ -94,3 +95,14 @@ def st_speed(
         cap = min(cap, max_rate / rate)
     speed = min(speed, cap)
     return speed if speed >= min_change else 1.0
+
+
+ST_SPEED_GAIN = 1.25  # StyleTTS2 shortens a line by only ~80 % of (speed − 1); 1.4 and above garbles
+ST_ENGINE_MAX = 1.35
+
+
+def st_engine_speed(ratio: float, *, gain: float = ST_SPEED_GAIN, cap: float = ST_ENGINE_MAX) -> float:
+    """The `speed` to pass to StyleTTS2 so that the line really comes out `ratio` times shorter."""
+    if ratio <= 1.0:
+        return 1.0
+    return float(min(cap, 1.0 + (ratio - 1.0) * gain))

@@ -24,7 +24,7 @@ STAGE_TITLES = {
     "mux": "Збираю відео",
 }
 
-EMOTION_DEFAULT = 0.8
+EMOTION_DEFAULT = 1.0
 
 VOICE_HELP = (
     "Два типи голосів. Точні наголоси, без клонування (StyleTTS2): st (чоловічий), st:<ім'я> (31 голос, "

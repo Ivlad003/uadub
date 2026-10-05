@@ -48,8 +48,8 @@ def test_build_units_merges_short_and_slots():
 
 def test_place_clips_speedup_and_spill():
     units = [{"start": 0.0, "end": 2.0, "slot_end": 2.5}, {"start": 2.6, "end": 4.0, "slot_end": 5.0}]
-    plan = place_clips(units, [2.4, 3.6], max_speed=1.25, spill=0.0)
-    assert plan[0]["speed"] == 1.0  # fits
+    plan = place_clips(units, [2.3, 3.6], max_speed=1.25, spill=0.0)
+    assert plan[0]["speed"] == 1.0  # fits, and leaves a 0.3 s gap before the next line
     assert abs(plan[1]["speed"] - 1.25) < 1e-6  # needs 1.5x, capped
     assert plan[1]["start"] == 2.6
     plan = place_clips(units, [3.5, 1.0], max_speed=1.25, spill=0.0)
@@ -1144,3 +1144,158 @@ def test_pace_cap():
     assert abs(pace_cap(2.0, 14, 1.15) - 7.5 * 2.0 / 14) < 1e-6  # 7 syl/s: only ~1.07 left
     assert pace_cap(2.0, 20, 1.15) == 1.0  # already past the ceiling
     assert pace_cap(2.0, 0, 1.15) == 1.15  # no syllables: engine cap only
+
+
+def test_place_clips_keeps_a_breath_between_lines():
+    # When a line overruns, the next one starts after a natural pause, not glued at 50 ms.
+    units = [{"start": 0.0, "end": 2.0, "slot_end": 2.5}, {"start": 2.6, "end": 4.0, "slot_end": 5.0}]
+    plan = place_clips(units, [2.8, 1.0], max_speed=1.25)
+    assert abs(plan[1]["start"] - (2.8 + 0.25)) < 1e-6
+
+
+def test_budgets_reserve_a_pause_and_assume_a_natural_pace():
+    from uadub.translate import set_budgets
+
+    units = [{"start": 0.0, "end": 2.0, "slot_end": 2.8}, {"start": 3.0, "end": 4.0, "slot_end": 4.1}]
+    set_budgets(units, rate=4.8, max_speed=1.25)
+    # (2.8 − 0.3 s pause) × 4.8 syl/s × 1.1 = 13.2 → 13; the old formula gave 2.8 × 4.8 × 1.2 = 16
+    assert units[0]["max_syl"] == 13
+    # the reserve never eats into the spoken part of the line: max(1.0, 1.1 − 0.3) × 4.8 × 1.1 = 5
+    assert units[1]["max_syl"] == 5
+
+
+def test_version_numbers_after_a_latin_name_are_read_digit_by_digit():
+    assert to_speech_text("модель Qwen 3.6.") == "модель квен три шість."
+    assert to_speech_text("Python 3.12 вийшов") == "пайтон три дванадцять вийшов"
+    assert "один кома п'ять" in to_speech_text("версія 1.5")  # a plain decimal keeps the comma
+
+
+def test_match_spectrum_moves_the_dub_towards_the_reference():
+    import numpy as np
+    from uadub.audio import match_spectrum
+
+    rng = np.random.default_rng(0)
+    sr = 24000
+    white = rng.standard_normal(sr * 4).astype(np.float32)
+    bright = np.diff(white, prepend=0.0).astype(np.float32)  # reference: tilted up
+    dull = np.convolve(white, np.ones(8) / 8, mode="same").astype(np.float32)  # dub: tilted down
+
+    def tilt(y):
+        spec = np.abs(np.fft.rfft(y)) ** 2
+        f = np.fft.rfftfreq(len(y), 1 / sr)
+        lo, hi = spec[(f > 200) & (f < 800)].mean(), spec[(f > 3000) & (f < 6000)].mean()
+        return 10 * np.log10(hi / lo)
+
+    before = abs(tilt(dull) - tilt(bright))  # ~33 dB apart
+    out = match_spectrum(dull, bright, sr, max_db=40.0)
+    assert len(out) == len(dull)
+    assert abs(tilt(out) - tilt(bright)) < 3.0  # unclamped: the tilt is matched
+    # the default ±6 dB clamp moves the tilt by about 12 dB and no more
+    after = abs(tilt(match_spectrum(dull, bright, sr)) - tilt(bright))
+    assert before - 14 < after < before - 8
+
+
+def test_st_engine_speed_compensates_the_nonlinear_response():
+    # Measured: StyleTTS2 `speed` 1.1 shortens a line by ~6–8 %, 1.2 by ~17 %, 1.3 by ~25 %; 1.4 jumps.
+    from uadub.fit import st_engine_speed
+
+    assert st_engine_speed(1.0) == 1.0
+    assert abs(st_engine_speed(1.08) - 1.1) < 1e-6
+    assert abs(st_engine_speed(1.16) - 1.2) < 1e-6
+    assert st_engine_speed(1.5) == 1.35  # never into the region where the engine garbles
+
+
+def test_unify_pronunciations_makes_a_name_sound_the_same_in_every_line():
+    from uadub.translate import unify_pronunciations
+
+    units = [
+        {"id": 1, "uk": "Для LM Studio опцій немає.", "tts": "Для ел ем студіо опцій немає."},
+        {"id": 2, "uk": "Відкриється LM Studio з посиланням.", "tts": "Відкриється ел ем студіо з посиланням."},
+        {"id": 3, "uk": "В LM Studio ми оберемо варіант.", "tts": "В ель ем студіо ми оберемо варіант."},
+        {"id": 4, "uk": "Прокрутіть до LM Studio, і це знову відкриє.", "tts": "Прокрутіть до ел-ем студіо, і це знову відкриє."},
+        {"id": 5, "uk": "Той самий список із Hugging Face.", "tts": "Той самий список із хаґінґ фейс."},
+        {"id": 6, "uk": "Без латинки.", "tts": None},
+    ]
+    changed = unify_pronunciations(units)
+    # «LM» is an acronym: StyleTTS2 says our hyphenated letter spelling clearly, the LLM's loose
+    # «ел ем» / «ель ем» is slurred. So the term takes textnorm's form in every line.
+    assert changed == 3
+    assert units[0]["tts"] == "Для ел-ем студіо опцій немає."
+    assert units[2]["tts"] == "В ел-ем студіо ми оберемо варіант."
+    assert units[3]["tts"] == "Прокрутіть до ел-ем студіо, і це знову відкриє."
+    assert units[4]["tts"] == "Той самий список із хаґінґ фейс."  # a plain name seen once is left alone
+
+
+def test_unify_pronunciations_majority_for_plain_names():
+    from uadub.translate import unify_pronunciations
+
+    units = [
+        {"id": 1, "uk": "Відкрийте Hugging Face.", "tts": "Відкрийте хаґінґ фейс."},
+        {"id": 2, "uk": "На Hugging Face є список.", "tts": "На хагінг фейс є список."},
+        {"id": 3, "uk": "Знову Hugging Face.", "tts": "Знову хаґінґ фейс."},
+    ]
+    assert unify_pronunciations(units) == 1
+    assert units[1]["tts"] == "На хаґінґ фейс є список."
+
+
+def test_budgets_also_give_a_word_count():
+    # LLMs count words far better than syllables: ~2.4 syllables per Ukrainian word.
+    from uadub.translate import set_budgets
+
+    units = [{"start": 0.0, "end": 5.0, "slot_end": 5.8}]
+    set_budgets(units, rate=4.8, max_speed=1.25)
+    assert units[0]["max_syl"] == 29
+    assert units[0]["max_words"] == 12
+
+
+def test_lost_facts_flags_dropped_names_numbers_and_labels():
+    from uadub.translate import lost_facts
+
+    old = "Натисніть «Використати цю модель», щоб завантажити Qwen 3.6 з Hugging Face."
+    assert lost_facts(old, "Натисніть кнопку, щоб завантажити Qwen 3.6 з Hugging Face.") == ["«Використати цю модель»"]
+    assert lost_facts(old, "Натисніть «Використати цю модель» і завантажте Qwen з Hugging Face.") == ["3.6"]
+    assert lost_facts(old, "Натисніть «Використати цю модель», щоб завантажити Qwen 3.6.") == ["Hugging Face"]
+    assert lost_facts(old, "Натисніть «Використати цю модель» — і Qwen 3.6 завантажиться з Hugging Face.") == []
+    # case and quote style do not matter
+    assert lost_facts("Кнопка «Завантажити» тут.", "Кнопка „завантажити“ — тут.") == []
+
+
+def test_unify_pronunciations_prefers_the_brief():
+    from uadub.translate import unify_pronunciations
+
+    units = [
+        {"id": 1, "uk": "Відкрийте Hugging Face.", "tts": "Відкрийте хагінг фейс."},
+        {"id": 2, "uk": "На Hugging Face є список.", "tts": "На хагінг фейс є список."},
+    ]
+    assert unify_pronunciations(units, {"Hugging Face": "хаґінґ фейс"}) == 2
+    assert units[0]["tts"] == "Відкрийте хаґінґ фейс."
+    assert units[1]["tts"] == "На хаґінґ фейс є список."
+
+
+def test_glossary_pronunciations_from_the_brief():
+    from uadub.translate import glossary_pronunciations
+
+    gl = [{"src": "LM Studio", "uk": "LM Studio", "say": "ел-ем студіо"},
+          {"src": "quantization", "uk": "квантування"},
+          {"src": "Hugging Face", "uk": "Hugging Face", "say": "Hugging Face"},  # not Cyrillic: ignored
+          {"src": "GitHub", "uk": "GitHub", "say": "ґіт+хаб"}]  # stress marks are stripped
+    assert glossary_pronunciations(gl) == {"LM Studio": "ел-ем студіо", "GitHub": "ґітхаб"}
+
+
+def test_unify_pronunciations_two_names_in_one_line():
+    # Replacing the first name must not shift the span of the second one («еем-ел-екс» bug).
+    from uadub.translate import unify_pronunciations
+
+    units = [
+        {"id": 1, "uk": "Оберіть LM Studio чи MLX.", "tts": "Оберіть ель ем студіо чи ем-ел-ікс."},
+        {"id": 2, "uk": "Знову LM Studio.", "tts": "Знову ел-ем студіо."},
+    ]
+    unify_pronunciations(units)
+    assert units[0]["tts"] == "Оберіть ел-ем студіо чи ем-ел-екс."
+
+
+def test_clean_tts_rejects_garbage_letters():
+    from uadub.translate import _clean_tts
+
+    assert _clean_tts("файл завеликий", "файл завеликий через відсутність відеокар粹карти.") == ""
+    assert _clean_tts("LM Studio тут", "ел-ем студіо тут") == "ел-ем студіо тут"
