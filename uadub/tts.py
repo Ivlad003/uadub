@@ -242,6 +242,48 @@ def stressify_text(text: str, stressify) -> str:
     return "".join(out)
 
 
+def stress_letter_names(text: str) -> str:
+    """«ел-ем», «ем-ел-екс», «пі-сі»: an acronym read letter by letter is stressed on its last letter."""
+    import re
+
+    from .textnorm import _LETTER_NAMES
+
+    names = sorted(set(_LETTER_NAMES.values()), key=len, reverse=True)
+    alt = "|".join(re.escape(n) for n in names)
+    pat = re.compile(rf"(?<![А-Яа-яЄєІіЇїҐґ\u0301])((?:(?:{alt})-)+)({alt})(?![А-Яа-яЄєІіЇїҐґ\u0301])", re.I)
+
+    def repl(m: re.Match) -> str:
+        last = m.group(2)
+        for k, ch in enumerate(last):
+            if ch in _STRESS_VOWEL:
+                return m.group(1) + last[: k + 1] + "\u0301" + last[k + 1 :]
+        return m.group(0)
+
+    return pat.sub(repl, text)
+
+
+def _stress_unknown_words(text: str, stressify) -> str:
+    """Words the dictionary does not know («двобітну», «відфільтруєте») get the stress of their stem."""
+    import re
+
+    from .stress import stress_by_prefix, with_acute
+
+    def stem_stress(stem: str) -> int | None:
+        marked = stressify(stem)
+        if "\u0301" not in marked:
+            return None
+        return sum(ch in _STRESS_VOWEL for ch in marked[: marked.index("\u0301")]) - 1
+
+    def repl(m: re.Match) -> str:
+        w = m.group(0)
+        if "\u0301" in w or "-" in w or sum(ch in _STRESS_VOWEL for ch in w) < 2:
+            return w
+        idx = stress_by_prefix(w, stem_stress)
+        return with_acute(w, idx) if idx is not None else w
+
+    return re.sub(_UK_WORD, repl, text)
+
+
 def prepare_st_text(text: str, stressify=None) -> str:
     """Our stress conventions → one combining acute after the stressed vowel of every word."""
     import re
@@ -252,10 +294,13 @@ def prepare_st_text(text: str, stressify=None) -> str:
     t = re.sub(r"[᠆‐‑‒–—―⁻₋−⸺⸻]", "-", t)
     t = re.sub(r"[\"«»„“”]", "", t)
     t = re.sub(r" - ", ": ", t).strip()
+    t = re.sub(r"[\s,;\-]+$", "", t)  # a line that continues into the next one still ends cleanly
     if t and t[-1] not in ".?!:…":
         t += "."
+    t = stress_letter_names(t)
     if stressify is not None:
         t = stressify_text(t, stressify)  # dictionary + grammatical context; marked words are kept
+        t = _stress_unknown_words(t, stressify)
 
     def one_stress(m):  # words with two allowed stresses (ви́си́ть) → keep the first
         w = m.group(0)

@@ -24,7 +24,7 @@ STAGE_TITLES = {
     "mux": "Збираю відео",
 }
 
-EMOTION_DEFAULT = 1.0
+EMOTION_DEFAULT = 0.6
 
 VOICE_HELP = (
     "Два типи голосів. Точні наголоси, без клонування (StyleTTS2): st (чоловічий), st:<ім'я> (31 голос, "
@@ -389,6 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "(<назва>.en.txt, <назва>.uk.txt, <назва>.en-uk.txt, наголоси — <назва>.uk.stress.txt) і показати посилання")
     p.add_argument("--drop-original", action="store_true", help="не додавати оригінальну звукову доріжку")
     p.add_argument("--max-speed", type=float, default=1.25, help="максимальне прискорення мовлення (1.25)")
+    p.add_argument("--pace", type=float, default=5.6, help="темп дубляжу, складів за секунду, однаковий для всіх реплік (5.6)")
     p.add_argument("--duck", type=float, help="приглушення фону під час мовлення, дБ (-4; без сепарації -13)")
     p.add_argument("--emotion", nargs="?", type=float, const=EMOTION_DEFAULT, default=0.0, metavar="K",
                    help=f"голоси st: брати інтонацію кожної репліки з оригіналу (тембр лишається українським). "
@@ -502,7 +503,7 @@ def main(argv: list[str] | None = None) -> None:
         subs=str(Path(args.subs).expanduser().resolve()) if args.subs else None,
         subs_lang=args.subs_lang,
         glossary=str(Path(args.glossary).expanduser().resolve()) if args.glossary else None,
-        keep_original=not args.drop_original, max_speed=args.max_speed, duck_db=args.duck,
+        keep_original=not args.drop_original, max_speed=args.max_speed, pace=args.pace, duck_db=args.duck,
         omni_steps=args.steps,
         sep_model=args.sep_model or (FAST_SEP_MODEL if args.fast else DEFAULT_SEP_MODEL),
         stress=args.stress,

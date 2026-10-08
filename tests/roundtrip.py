@@ -18,7 +18,7 @@ said = " ".join(speech_text(u) for u in json.loads((work / "units.json").read_te
 
 
 def norm(s: str) -> str:
-    s = s.lower().replace("’", "'").replace("ʼ", "'")
+    s = s.replace("\u0301", "").lower().replace("’", "'").replace("ʼ", "'")  # stress marks are not letters
     return re.sub(r"\s+", " ", re.sub(r"[^\w' ]", " ", s)).strip()
 
 

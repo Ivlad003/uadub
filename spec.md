@@ -304,8 +304,11 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
 - **Decision:**
   - StyleTTS2's 256-dimensional style vector is timbre (first 128) plus prosody (last 128).
   - Per line, the prosody half is computed from the original vocal clip with the model's own
-    `predictor_encoder` and blended as `(1−K)·voice + K·original`. Default K = 1.0 (was 0.8: at 1.0 the
-    pitch range is 6.9 vs 6.6 semitones against the speaker's 7.6, with a slightly better CER).
+    `predictor_encoder` and blended as `(1−K)·voice + K·original`. Default K = 0.6. The strength fades
+    on short lines (`fit.emotion_strength`: full at 14+ syllables, 30 % at 5): measured on the test
+    clip, the original line's prosody makes the sentence arc steep, and a short sentence then ends
+    5–6 semitones below its median (the speaker ends lines flat, +0.1), which sounds like every
+    sentence slamming shut. K = 1.0 widened the range (6.9 vs 6.6 semitones) but worsened that.
   - Opposite-sex lines keep the plain style. Short lines borrow same-speaker neighbours (1.5–6 s).
 - **Measured on the test clip:** pitch range (10–90 %) 4.6 → 6.7 semitones (original speaker 6.9);
   25/28 lines wider; CER 0.073 → 0.075; drawn-out lines 2 → 0. Korean `duo:st --emotion`: CER 0.011.
@@ -531,6 +534,64 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
 - **Consequences:** Fewer and safer shortenings; a consistent voice across lines. Measured by the number
   of lines sent to shortening, repeated line starts and a manual read of the 28 lines.
 
+### ADR-033: One pace for the whole dub, pauses that mirror the speaker
+- **Context:** Listening to the `st` dub: "drawn-out, then suddenly faster, every sentence an island".
+  Measured on the test clip: the pace ran 4.9–6.2 syl/s between lines because `st_speed` only sped
+  slow lines up to a floor; pauses were either exactly 0.25 s (12 of 27 joins, the constant breath
+  after an overrun) or 0.5–2.7 s of silence where the translation came out 25–30 % shorter than the
+  original line (the shortening pass overshot: 26 syllables for a budget of 39); the speaker's own
+  pauses are 0–0.6 s with a spread of 0.15.
+- **Decision:**
+  - `fit.st_speed` targets one pace, `--pace` (5.6 syl/s, ±5 %), in both directions: slow lines are
+    sped up, fast lines slowed down (engine value ≥ 0.85, measured: 0.9 lengthens a line by 5 %).
+    The slot comes second (never past the pace ceiling); slowing down never makes a line miss its
+    slot. `_omni_duration` uses the same pace for OmniVoice. tts versions: st 7, omni 4.
+  - `fit.place_clips`: after a line that ran late, the next one starts after the pause the speaker
+    made at that point, clamped to 0.2–0.5 s, instead of a constant 0.25 (mix version 4).
+  - StyleTTS2 lines are synthesised in order, and each is fitted to the time really left: the same
+    `fit.line_start` rule the mix uses tells where the line will start when the previous one ran
+    late, so the engine speeds up a little (never past the ceiling) instead of the mix stretching.
+  - A translation that would fill less than 80 % of the time the speaker took is spoken at the slow
+    edge of the band (pace − 10 %) rather than hurried to the pace (`st_speed(spoken_s=…)`), so the
+    hole after it is smaller. tts version 9.
+  - Translation: budgets for `st`/`omni` follow the pace (`spoken × pace × 1.05`; with lines fitted
+    to the time really left, lines at budget no longer go to the stretcher); the length rule
+    asks for 80–100 % of `max_words`; `translate.shorten_ok` rejects a rewrite under 70 % of the
+    budget unless the line was over it by more than 30 %; a line that still comes out under 70 % of
+    its budget (the model condenses long lines on its own) goes through an expansion pass
+    (`EXPAND_SYSTEM`): the model overshoots the budget by 30–50 % more often than not, so a rewrite
+    up to 1.4× the budget is kept and trimmed once, and reverted if still over 1.15×
+    (`expand_outcome`); a third shortening pass takes the lines still over by 15 % (they are what
+    makes the dub drift); two neighbouring lines that begin with the same word (`repeated_starts`)
+    are sent to `VARY_SYSTEM`. Translate version 19.
+- **Consequences:** On the test clip (`st --emotion`): pace p10–p90 4.9–6.2 → 5.4–7.3 syl/s with the
+  median at the pace (5.6), lines stretched in the mix 0, the dub starts at most 0.46 s late (was
+  0.97), silence where the speaker still talks 13.3 s → 4.2 s, two gaps over 1 s (were five),
+  translation length 0.94 of the original's (p10 0.83, was 0.66). Expressiveness that came from
+  pace variation is gone on purpose: the user asked for an even, moderate delivery.
+
+### ADR-034: Stress for StyleTTS2 — function words, letter names, unknown words
+- **Context:** 23 of 164 multi-vowel words on the test clip reached the engine without a stress mark,
+  so it guessed: pronoun homographs skipped by `HomographFinder` (са́мий/сами́й, сама́, самі́),
+  letter-by-letter acronyms («ел-ем», «ем-ел-екс») and words the dictionary does not know
+  («двобітну», «відфільтруєте»).
+- **Decision:**
+  - `HomographFinder(broad=True)` for the `st` engine: function words with two dictionary variants
+    are sent to the LLM too (the skip lists exist for OmniVoice, where each mark becomes ARPAbet).
+  - `tts.stress_letter_names`: a chain of letter names is stressed on its last letter («ел-е́м»,
+    «ем-ел-е́кс», «пі-сі́»), applied in `prepare_st_text` only, so OmniVoice is unchanged.
+  - `stress.stress_by_prefix`: a word the dictionary does not know takes the stress of its stem after
+    a derivational prefix («відфільтру́єте» ← «фільтру́єте»; «ви-» excluded, it attracts the stress).
+  - `stress.BUILTIN_STRESS`: frequent tech names and words outside the dictionary («ха́ґінґ»,
+    «двобі́тну», «її́»), merged under the user's dictionary for the acute target only.
+  - Homographs the two LLM votes did not settle take the dictionary's first variant (st only), and
+    `STRESS_SYSTEM` names the frequent pairs (са́мий/сама́, ро́змір, пра́вильний).
+  - A neural accentor (`theodotus/ukrainian-accentor-transformer`, CTranslate2, 42 MB) was evaluated
+    as the fallback for the remaining unknown words and deferred; see "Rejected or deferred".
+- **Consequences:** Multi-vowel words reaching the engine without a mark: 23 of 164 → 0 of 188 on
+  the test clip. The LLM makes more stress choices per video (a few seconds). Roundtrip CER on the
+  Ukrainian words is unchanged; the ASR's spelling of «LM Studio» still dominates the raw number.
+
 ---
 
 ## 5. Rejected or deferred alternatives
@@ -543,6 +604,7 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
 | Cross-language `clone` for dramas | Strong accent (CER 0.33); `duo` / `duo:st` recommended |
 | Contextual ByT5 stress model (lang-uk ukrainian-tts-preprocessing, 92.5 % word accuracy) | Researched as a reference; dictionary + Stanza + LLM homographs chosen instead |
 | Higgs TTS with emotion tags | Heavy; better suited to the RTX desktop; not integrated |
+| Neural accentor `theodotus/ukrainian-accentor-transformer` as the fallback for unknown words | Evaluated (CTranslate2, 42 MB, ~17 ms per word): 14/20 on a word list, two stresses on «розмір»/«правильний»/«сама», no stress on loanwords («студіо»), loops on isolated short words without a decode cap. Dictionary + prefixes + `BUILTIN_STRESS` cover the test clip; revisit if unknown words stay frequent on other material |
 | Third shortening pass for lines far over budget | Would bump translate (minutes per video); ADR-028 lets such lines spill instead of rushing them, measure first |
 | Online stress dictionaries (goroh, r2u) | Breaks offline; licensing |
 | Lip-sync, multi-speaker diarization | Out of scope for now |
@@ -571,7 +633,8 @@ Tools: `tests/roundtrip.py` (intelligibility), `tests/pace.py` (syl/s), and samp
 | Option | Meaning |
 |---|---|
 | `--voice` | `st`, `st:<name>`, `duo:st[:m,f]`, `clone`, `clone:file`, `omni:<desc>`, `duo`, presets, `duo:a,b` |
-| `--emotion [K]` | StyleTTS2 takes the original intonation (0–1, default 1.0) |
+| `--emotion [K]` | StyleTTS2 takes the original intonation (0–1, default 0.6; fades on short lines) |
+| `--pace X` | one pace for the whole dub, syllables per second (5.6, ADR-033) |
 | `--from LANG`, `--subs FILE`, `--subs-lang LANG` | source language / existing subtitles |
 | `--llm M` | MLX model, `ollama:<m>`, or `claude|opencode|codex|gemini[:model]` (env `UADUB_LLM`) |
 | `--review`, `--review-with H[:M]`, `--redo review` | human pause / agent review (env `UADUB_REVIEW_WITH`) |

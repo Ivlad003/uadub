@@ -97,6 +97,7 @@ class Options:
     glossary: str | None = None
     keep_original: bool = True
     max_speed: float = 1.25
+    pace: float = 5.6  # target pace of the dub, syllables per second (every line, ±5 %)
     tail: float = 0.8  # how far (s) a dub line may run past the original line end
     omni_steps: int = 16  # 16 ≈ real time on M1 Pro; 32 = slower, slightly cleaner
     omni_batch: int = 1  # batching is slower on MPS (padding), keep 1
@@ -186,14 +187,18 @@ class Options:
         if stage == "tts":
             from .stress import default_dict_paths, dict_fingerprint
 
-            fp["version"] = 6 if self.engine == "st" else 3  # st: pace band + calibrated speed (ADR-028)
+            fp["version"] = 9 if self.engine == "st" else 4  # one pace, lines fitted to the time really left (ADR-033)
+            if self.pace != 5.6:
+                fp["pace"] = self.pace  # only when changed, so existing runs keep their cache
             fp["stress_dict_hash"] = dict_fingerprint(default_dict_paths(self.stress_dict, self.work))
             if self.emotion and self.engine == "st":
                 fp["emotion"] = self.emotion  # only when on, so existing runs keep their cache
         if stage == "mix":
-            fp["version"] = 3  # breath between lines (ADR-029), spectrum match (ADR-030)
+            fp["version"] = 4  # pauses mirror the speaker's (ADR-033)
         if stage == "translate":
-            fp["version"] = 15  # bump when prompts/budgets change → old runs re-translate
+            fp["version"] = 19  # bump when prompts/budgets change → old runs re-translate
+            if self.pace != 5.6:
+                fp["pace"] = self.pace  # budgets follow the pace (ADR-033)
             fp["engine"] = self.engine
             fp["speaker_gender"] = self.speaker_gender
             if self.domain:

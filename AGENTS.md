@@ -44,7 +44,7 @@ the parts' audio is concatenated and muxed once over the original video.
 | `uadub/parts.py` | long videos: cut plan at pauses, per-part runs, shared brief, assembly (ADR-027) |
 | `uadub/config.py` | `Options` dataclass, model ids, voices, `fingerprint(stage)` |
 | `uadub/stages.py` | the seven stages; `_st_fit`, `_omni_duration`, `_clone_window`, `_emotion_styles` |
-| `uadub/translate.py` | all LLM prompts (`SYSTEM`, `BRIEF_SYSTEM`, `SHORTEN_SYSTEM`, `ANGLICISM_SYSTEM`, `STRESS_SYSTEM`), `_ask` / `_salvage_lines`, budgets |
+| `uadub/translate.py` | all LLM prompts (`SYSTEM`, `BRIEF_SYSTEM`, `SHORTEN_SYSTEM`, `EXPAND_SYSTEM`, `VARY_SYSTEM`, `ANGLICISM_SYSTEM`, `STRESS_SYSTEM`), `_ask` / `_salvage_lines`, budgets, `unify_pronunciations`, `lost_facts` |
 | `uadub/llm.py` | `MLXLLM`, `OllamaLLM`, `AgentCLILLM` (claude/opencode/codex/gemini), `extract_json` |
 | `uadub/tts.py` | `St2Engine` (StyleTTS2 + `--emotion`), `OmniEngine`, `UkrTTSEngine`, `prepare_st_text`, `stressify_text` |
 | `uadub/stress.py` | dictionaries, `StressFixer`, `HomographFinder`, ARPAbet, `lookup()` |

@@ -70,22 +70,6 @@ def test_place_clips_small_overrun_is_not_stretched():
     assert plan[0]["speed"] == 1.0
 
 
-def test_st_speed_targets_a_pace_band():
-    # Drawn-out line (12 syllables in 2.88 s = 4.2 syl/s) is brought up to the band floor, 5 syl/s.
-    assert abs(st_speed(2.88, 12, 3.12) - 5.0 * 2.88 / 12) < 1e-6
-    # In the band and fits its slot: untouched.
-    assert st_speed(2.82, 15, 2.96) == 1.0
-    # Slightly too long for the slot: sped up just enough.
-    assert abs(st_speed(3.16, 17, 2.96) - 3.16 / 2.96) < 1e-6
-    # Far too long: the speed-up stops where the pace would exceed 7.5 syl/s (never 1.35x here).
-    assert abs(st_speed(2.75, 20, 1.84) - 7.5 * 2.75 / 20) < 1e-6
-    # Already faster than the ceiling: never sped up, even when it does not fit.
-    assert st_speed(5.02, 41, 4.0) == 1.0
-    # No syllable count (digits only, etc.): fit the slot, capped at max_speed.
-    assert abs(st_speed(3.0, 0, 2.0) - 1.35) < 1e-6
-    assert st_speed(3.0, 0, 2.95) == 1.0  # 1.017: below the 2 % threshold
-
-
 def test_target_duration():
     assert target_duration(2.0, 3.0, 1.25) is None
     assert target_duration(3.0, 2.0, 1.25) == 2.4
@@ -228,9 +212,11 @@ def test_omni_duration_never_drawn_out():
             return self.est
 
     text = "Ви натискаєте на квантування, і з'явиться вікно."  # 17 syllables
-    assert _omni_duration(Eng(9.0), text, None, 10.0, 1.25) == round(17 / 5.0, 3)  # inflated → capped at 5 syl/s
-    assert _omni_duration(Eng(2.8), text, None, 10.0, 1.25) == 2.8  # natural pace kept
-    assert _omni_duration(Eng(2.8), text, None, 2.0, 1.25) == 2.24  # too long for slot → faster
+    pace = 17 / 5.6
+    assert _omni_duration(Eng(9.0), text, None, 10.0, 1.25, 5.6) == round(pace, 3)  # inflated → the dub's pace
+    assert _omni_duration(Eng(3.1), text, None, 10.0, 1.25, 5.6) == 3.1  # within ±5 % of the pace: kept
+    assert _omni_duration(Eng(2.8), text, None, 10.0, 1.25, 5.6) == round(pace, 3)  # 8 % fast → the pace
+    assert _omni_duration(Eng(2.8), text, None, 2.0, 1.25, 5.6) == round(pace / 1.25, 3)  # too long for slot → faster
 
 
 def test_styletts_text_preparation():
@@ -1150,7 +1136,7 @@ def test_place_clips_keeps_a_breath_between_lines():
     # When a line overruns, the next one starts after a natural pause, not glued at 50 ms.
     units = [{"start": 0.0, "end": 2.0, "slot_end": 2.5}, {"start": 2.6, "end": 4.0, "slot_end": 5.0}]
     plan = place_clips(units, [2.8, 1.0], max_speed=1.25)
-    assert abs(plan[1]["start"] - (2.8 + 0.25)) < 1e-6
+    assert abs(plan[1]["start"] - (2.8 + 0.5)) < 1e-6  # the speaker paused 0.6 s here → clamped to 0.5
 
 
 def test_budgets_reserve_a_pause_and_assume_a_natural_pace():
@@ -1299,3 +1285,167 @@ def test_clean_tts_rejects_garbage_letters():
 
     assert _clean_tts("файл завеликий", "файл завеликий через відсутність відеокар粹карти.") == ""
     assert _clean_tts("LM Studio тут", "ел-ем студіо тут") == "ел-ем студіо тут"
+
+
+def test_st_speed_targets_one_pace_in_both_directions():
+    from uadub.fit import st_speed
+
+    # 12 syllables in 2.88 s = 4.2 syl/s: sped up to the target pace 5.6 → ratio 5.6/4.17 = 1.344 → cap 1.35
+    assert abs(st_speed(2.88, 12, 3.5, pace=5.6) - 5.6 * 2.88 / 12) < 1e-6
+    # 41 syllables in 5.02 s = 8.2 syl/s: slowed down towards the pace, as far as the engine allows (0.89)
+    assert abs(st_speed(5.02, 41, 8.0, pace=5.6) - 0.89) < 1e-6
+    # within ±5 % of the pace: untouched
+    assert st_speed(2.70, 15, 3.0, pace=5.6) == 1.0  # 5.56 syl/s
+    # slowing down never makes the line miss its slot: 20 syl in 2.9 s (6.9 syl/s) would want 0.81 → fits exactly
+    assert abs(st_speed(2.9, 20, 3.1, pace=5.6) - 2.9 / 3.1) < 1e-6
+    # too long for the slot: sped up to fit, still never past the ceiling
+    assert abs(st_speed(3.16, 17, 2.96, pace=5.6) - 3.16 / 2.96) < 1e-6
+    assert abs(st_speed(2.75, 20, 1.84, pace=5.6) - 7.5 * 2.75 / 20) < 1e-6
+
+
+def test_st_engine_speed_slows_down_too():
+    from uadub.fit import st_engine_speed
+
+    # Measured: engine 0.9 → 5 % longer, 0.85 → 11 %, 0.8 → 15 %.
+    assert abs(st_engine_speed(0.95) - (1 - 0.05 * 1.4)) < 1e-6
+    assert st_engine_speed(0.7) == 0.85  # never below the region that still sounds natural
+
+
+def test_place_clips_mirrors_the_original_pause_after_an_overrun():
+    # The first line overruns; the second starts after the pause the speaker made there (0.4 s),
+    # clamped to 0.2–0.5 s.
+    units = [{"start": 0.0, "end": 2.0, "slot_end": 2.5}, {"start": 2.4, "end": 4.0, "slot_end": 5.0},
+             {"start": 4.0, "end": 5.0, "slot_end": 5.5}]
+    plan = place_clips(units, [2.8, 1.9, 0.5], max_speed=1.25)
+    assert abs(plan[1]["start"] - (2.8 + 0.4)) < 1e-6
+    assert abs(plan[2]["start"] - (plan[1]["start"] + 1.9 + 0.2)) < 1e-6  # no pause in the original → 0.2
+    units[1]["start"] = 3.0  # a 1 s pause in the original → at most 0.5
+    plan = place_clips(units, [3.5, 1.9, 0.5], max_speed=1.25, spill=0.0, caps=[1.0, 1.0, 1.0])
+    assert abs(plan[1]["start"] - (3.5 + 0.5)) < 1e-6
+
+
+def test_emotion_strength_fades_on_short_lines():
+    from uadub.fit import emotion_strength
+
+    assert emotion_strength(0.6, 14) == 0.6  # 14+ syllables: full strength
+    assert abs(emotion_strength(0.6, 9) - 0.3) < 1e-9  # halfway
+    assert abs(emotion_strength(0.6, 5) - 0.18) < 1e-9  # short lines keep 30 %
+    assert emotion_strength(0.0, 20) == 0.0
+
+
+def test_shortening_rejects_an_undershoot():
+    from uadub.translate import shorten_ok
+
+    # 26 syllables for a budget of 24 (8 % over): a rewrite of 14 syllables threw away too much
+    assert not shorten_ok(old_syl=26, new_syl=14, max_syl=24)
+    assert shorten_ok(old_syl=26, new_syl=22, max_syl=24)
+    # a line twice the budget may legitimately come back short
+    assert shorten_ok(old_syl=48, new_syl=14, max_syl=24)
+    assert not shorten_ok(old_syl=26, new_syl=26, max_syl=24)  # not shorter at all
+
+
+def test_letter_names_are_stressed_on_the_last_letter():
+    from uadub.tts import stress_letter_names
+
+    assert stress_letter_names("ел-ем студіо або ем-ел-екс і пі-сі.") == "ел-е\u0301м студіо або ем-ел-е\u0301кс і пі-сі\u0301."
+    assert stress_letter_names("оупен-ей-ай і чат-джі-пі-ті") == "оупен-ей-а\u0301й і чат-джі-пі-ті\u0301"
+    assert stress_letter_names("ві-рем і мак-о-ес") == "ві-рем і мак-о-ес"  # not letter chains
+
+
+def test_stress_fallback_by_prefix():
+    from uadub.stress import stress_by_prefix
+
+    # «відфільтруєте» is not in the dictionary, «фільтруєте» is: the stress moves with the stem
+    assert stress_by_prefix("відфільтруєте", {"фільтруєте": 1}) == 2  # vowel index in the long word
+    assert stress_by_prefix("двобітну", {"бітну": 0}) == 1
+    assert stress_by_prefix("вийти", {"йти": 0}) is None  # «ви-» takes the stress itself: not derived this way
+    assert stress_by_prefix("незнайоме", {}) is None
+
+
+def test_budgets_follow_the_dub_pace_for_engines_that_control_duration():
+    from uadub.translate import set_budgets
+
+    units = [{"start": 0.0, "end": 5.0, "slot_end": 5.8}]
+    set_budgets(units, rate=5.6, max_speed=1.25, fill=1.05)  # st/omni: the pace itself, +5 % tolerance
+    assert units[0]["max_syl"] == 32  # 5.5 × 5.6 × 1.05 = 32.3
+
+
+def test_expand_ok_accepts_only_a_fuller_line_within_budget():
+    from uadub.translate import expand_ok, needs_expansion
+
+    assert needs_expansion(syl=16, max_syl=29, src="And when you click that, it will ask you to open an LM Studio")
+    assert not needs_expansion(syl=24, max_syl=29, src="And when you click that, it will ask you")  # 83 %: fine
+    assert not needs_expansion(syl=5, max_syl=12, src="Okay. So.")  # nothing to restore from
+    assert expand_ok(old_syl=16, new_syl=26, max_syl=29)
+    assert not expand_ok(old_syl=16, new_syl=15, max_syl=29)  # not longer
+    assert not expand_ok(old_syl=16, new_syl=34, max_syl=29)  # over the budget
+
+
+def test_homograph_fallback_marks_the_first_dictionary_variant():
+    from uadub.translate import _fallback_marks
+
+    ask = [{"id": "0:2", "_options": [0, 1]}, {"id": "0:5", "_options": [1, 2]}, {"id": "3:1", "_options": [0, 2]}]
+    marks = {0: {2: 1}}  # the two votes agreed on the first word only
+    assert _fallback_marks(ask, marks, broad=False) == {0: {2: 1}}
+    assert _fallback_marks(ask, marks, broad=True) == {0: {2: 1, 5: 1}, 3: {1: 0}}
+
+
+def test_builtin_stress_for_tech_names_and_bit_words():
+    from uadub.stress import StressFixer
+
+    fixer = StressFixer("dict", [], target="acute")
+    assert fixer.apply("хаґінґ фейс, двобітну версію, її список") == "ха́ґінґ фейс, двобі́тну версію, ї́ї список".replace("ї́ї", "її́")
+    # OmniVoice (ARPAbet) does not get these: a transcription would add an English accent
+    assert StressFixer("dict", [], target="arpa").apply("хаґінґ фейс") == "хаґінґ фейс"
+
+
+def test_line_start_shared_by_mix_and_tts():
+    from uadub.fit import line_start
+
+    u = {"start": 2.4, "end": 4.0}
+    assert line_start(u, None, None) == 2.4  # first line: on time
+    assert line_start(u, 2.0, 2.0) == 2.4  # previous ended early: on time
+    assert abs(line_start(u, 2.8, 2.0) - 3.2) < 1e-9  # ran late: after the speaker's own 0.4 s pause
+    assert abs(line_start(u, 2.8, 2.4) - 3.0) < 1e-9  # no pause in the original → 0.2
+    assert abs(line_start(u, 2.8, 1.0) - 3.3) < 1e-9  # a 1.4 s pause → at most 0.5
+
+
+def test_repeated_starts():
+    from uadub.translate import repeated_starts
+
+    units = [{"uk": "Після фільтрації оберіть модель."}, {"uk": "Після фільтрації я оберу цю."},
+             {"uk": "Тож натисніть."}, {"uk": "тож далі."}, {"uk": ""}]
+    assert repeated_starts(units) == [1, 3]
+
+
+def test_letter_names_stressed_at_line_start_too():
+    from uadub.tts import stress_letter_names
+
+    assert stress_letter_names("Ел-ем студіо.") == "Ел-е́м студіо."
+
+
+def test_prepare_st_text_drops_a_trailing_comma():
+    from uadub.tts import prepare_st_text
+
+    assert prepare_st_text("натисніть «використати цю модель»,") == "натисніть використати цю модель."
+    assert prepare_st_text("далі —") == "далі."
+
+
+def test_st_speed_lets_a_short_line_use_its_time():
+    from uadub.fit import st_speed
+
+    # 7 syllables that the speaker took 2.7 s to say: at the pace the dub would fill 46 % of that time,
+    # so the line stays at the slow edge of the band (pace − 10 %) instead of being hurried to the pace
+    assert st_speed(1.4, 7, 2.9, pace=5.6, spoken_s=2.7) == 1.0  # natural 5.0 syl/s ≈ 5.04: kept
+    assert abs(st_speed(1.4, 7, 2.9, pace=5.6) - 5.6 * 1.4 / 7) < 1e-6  # without the hint: to the pace
+    assert abs(st_speed(1.08, 7, 2.9, pace=5.6, spoken_s=2.7) - 0.89) < 1e-6  # fast take: slowed as far as allowed
+    assert abs(st_speed(2.5, 15, 3.0, pace=5.6, spoken_s=2.8) - 5.6 / 6.0) < 1e-6  # fills its time: just the pace rule
+
+
+def test_expand_outcome():
+    from uadub.translate import expand_outcome
+
+    assert expand_outcome(old_syl=7, new_syl=15, max_syl=15) == "accept"
+    assert expand_outcome(old_syl=29, new_syl=57, max_syl=42) == "shorten"  # 136 %: usable after a trim
+    assert expand_outcome(old_syl=7, new_syl=22, max_syl=15) == "reject"  # 147 %: a trim will not get there
+    assert expand_outcome(old_syl=7, new_syl=6, max_syl=15) == "reject"

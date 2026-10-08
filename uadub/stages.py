@@ -12,7 +12,7 @@ import numpy as np
 
 from . import audio as A
 from .config import CACHE_DIR, SYLLABLE_RATE, Options
-from .fit import MAX_RATE, MIN_RATE, SPILL, pace_cap, place_clips, st_engine_speed, st_speed, target_duration
+from .fit import MAX_RATE, MIN_RATE, PACE_TOL, SPILL, emotion_strength, line_start, pace_cap, place_clips, st_engine_speed, st_speed, target_duration
 from .segments import assign_slots, build_units, merge_tokens_to_words, slot
 from .srt import make_cues, write_srt
 
@@ -201,15 +201,16 @@ def stage_translate(opt: Options) -> None:
         if opt.text_lang == "uk":  # Ukrainian subtitles: nothing to translate, just voice them
             from .translate import resolve_homographs, set_budgets
 
-            set_budgets(units, rate=SYLLABLE_RATE[opt.engine], max_speed=opt.max_speed)
+            set_budgets(units, rate=_budget_rate(opt)[0], max_speed=opt.max_speed, fill=_budget_rate(opt)[1])
             for u in units:
                 u["uk"] = u["text"]
             info = {"homographs": resolve_homographs(llm, units, log=log) if opt.stress == "auto" else {}}
         else:
             shared = json.loads(Path(opt.shared_brief).read_text(encoding="utf-8")) if opt.shared_brief else None
             edge = json.loads(Path(opt.edge_context).read_text(encoding="utf-8")) if opt.edge_context else None
-            info = translate_units(llm, units, rate=SYLLABLE_RATE[opt.engine], gender=opt.speaker_gender,
-                                   glossary_path=opt.glossary, max_speed=opt.max_speed,
+            rate, fill = _budget_rate(opt)
+            info = translate_units(llm, units, rate=rate, fill=fill, gender=opt.speaker_gender,
+                                   glossary_path=opt.glossary, max_speed=opt.max_speed, engine=opt.engine,
                                    stress=opt.stress, source_lang=opt.text_lang, domain=opt.domain,
                                    shared_brief=shared, edge=edge, log=log)
     finally:
@@ -270,7 +271,15 @@ def _speakable(text: str) -> bool:
     return bool(re.search(r"[^\W\d_]", text or ""))
 
 
-def _omni_duration(eng, text: str, prompt, slot_s: float, max_speed: float) -> float:
+def _budget_rate(opt: Options) -> tuple[float, float | None]:
+    """Syllables per second the translation is budgeted for: the dub's pace (+5 % tolerance) for the
+    engines that are driven at it, the engine's natural pace for ukrainian-tts (ADR-033)."""
+    if opt.engine == "ukr":
+        return SYLLABLE_RATE["ukr"], None
+    return opt.pace, 1.05
+
+
+def _omni_duration(eng, text: str, prompt, slot_s: float, max_speed: float, pace: float) -> float:
     """Always give OmniVoice an explicit length.
 
     Left to itself it estimates the length from the text it receives — including bracketed
@@ -282,6 +291,9 @@ def _omni_duration(eng, text: str, prompt, slot_s: float, max_speed: float) -> f
     natural = eng.natural_duration(text, prompt)
     syl = syllables(text)
     if syl:
+        wanted = syl / pace  # one pace for the whole dub (ADR-033); the engine's own estimate within ±5 % is kept
+        if abs(natural / wanted - 1.0) > PACE_TOL:
+            natural = wanted
         natural = min(max(natural, syl / MAX_RATE), syl / MIN_RATE)
     forced = target_duration(natural, slot_s, max_speed)
     return round(forced if forced is not None else natural, 3)
@@ -291,9 +303,10 @@ ST_MAX_SPEED = 1.35  # StyleTTS2 still sounds natural up to ~1.3×
 MIX_RESTRETCH = 1.15  # engines that already fitted their lines may be stretched only this much more
 
 
-def _st_fit(eng, text: str, voice: str, plain: str, slot_s: float, max_speed: float, style=None) -> np.ndarray:
-    """Voice a line with StyleTTS2, re-synthesising faster (its own `speed`, no time-stretch
-    artefacts) when it is drawn-out or too long for the slot; see `st_speed` for the pace band."""
+def _st_fit(eng, text: str, voice: str, plain: str, slot_s: float, max_speed: float, pace: float,
+            style=None, spoken_s: float | None = None) -> np.ndarray:
+    """Voice a line with StyleTTS2 at the dub's pace, re-synthesising with its own `speed` (no
+    time-stretch artefacts) when the natural take is off the pace or too long for the slot."""
     from .textnorm import syllables
 
     y = A.trim_silence(eng.synth(text, voice, 1.0, style=style), eng.sr)
@@ -301,8 +314,8 @@ def _st_fit(eng, text: str, voice: str, plain: str, slot_s: float, max_speed: fl
     if length <= 0:
         return y
     cap = min(ST_MAX_SPEED, max(max_speed, 1.0) + 0.1)
-    speed = st_speed(length, syllables(plain), slot_s, max_speed=cap)
-    if speed > 1.0:
+    speed = st_speed(length, syllables(plain), slot_s, pace=pace, max_speed=cap, spoken_s=spoken_s)
+    if speed != 1.0:
         y = eng.synth(text, voice, st_engine_speed(speed), style=style)
     return y
 
@@ -314,6 +327,8 @@ def _emotion_styles(eng, opt: Options, units: list[dict], voices: list[str]) -> 
     a woman's pitch movement sounds wrong. Very short lines borrow a neighbour of the same speaker.
     """
     from .config import ST_VOICES
+    from .textnorm import syllables
+    from .translate import speech_text
 
     w = opt.work
     src = _voice_src(w)
@@ -328,7 +343,8 @@ def _emotion_styles(eng, opt: Options, units: list[dict], voices: list[str]) -> 
             continue
         a, b = _clone_window(units, i, pitch, min_len=1.5, max_len=6.0)
         p = eng.prosody(orig[int(units[a]["start"] * eng.sr) : int(units[b]["end"] * eng.sr)], eng.sr)
-        styles.append(eng.blend(voice, p, opt.emotion) if p is not None else None)
+        k = emotion_strength(opt.emotion, syllables(speech_text(u)))  # softer on short lines (ADR-017)
+        styles.append(eng.blend(voice, p, k) if p is not None else None)
         used += p is not None
     log(f"   • інтонація оригіналу (--emotion {opt.emotion:g}): {used} з {len(units)} реплік")
     return styles
@@ -380,12 +396,16 @@ def stage_tts(opt: Options) -> None:
         male, female = (arg.split(",") + [arg])[:2] if kind == "st_duo" else (arg, arg)
         voices = [female if (kind == "st_duo" and u.get("gender") == "female") else male for u in units]
         styles = _emotion_styles(eng, opt, units, voices) if opt.emotion > 0 else [None] * len(units)
+        prev_dub_end = prev_orig_end = None  # the line before may have run late: fit the time really left
         for u, voice, style in tqdm(list(zip(units, voices, styles)), desc="   озвучення", unit="реп"):
             text = speech_text(u)
             if not _speakable(text):
                 u["tts_len"] = 0.0
                 continue
-            store(u, _st_fit(eng, say(u, fixer), voice, text, slot(u), opt.max_speed, style), eng.sr)
+            start = line_start(u, prev_dub_end, prev_orig_end)  # the same rule the mix uses
+            store(u, _st_fit(eng, say(u, fixer), voice, text, max(0.05, u["slot_end"] - start), opt.max_speed,
+                             opt.pace, style, spoken_s=u["end"] - u["start"]), eng.sr)
+            prev_dub_end, prev_orig_end = start + u["tts_len"], u["end"]
     elif kind in ("preset", "duo_preset"):
         male, female = (arg.split(",") + ["tetiana"])[:2] if kind == "duo_preset" else (arg, arg)
         eng = UkrTTSEngine(male)
@@ -437,7 +457,7 @@ def stage_tts(opt: Options) -> None:
             idx = todo[k : k + bs]
             plain = [speech_text(units[i]) for i in idx]
             texts = [say(units[i], fixer) for i in idx]
-            durs = [_omni_duration(eng, t, prompts[i], slot(units[i]), opt.max_speed) for t, i in zip(plain, idx)]
+            durs = [_omni_duration(eng, t, prompts[i], slot(units[i]), opt.max_speed, opt.pace) for t, i in zip(plain, idx)]
             for i, y in zip(idx, eng.synth_batch(texts, durs, [prompts[i] for i in idx])):
                 store(units[i], y, eng.sr)
     save_json(w, "units.json", units)

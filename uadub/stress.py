@@ -137,6 +137,19 @@ def _vowel_count(word: str) -> int:
     return sum(ch.lower() in VOWELS for ch in word)
 
 
+# Stress of frequent names and words the dictionary does not know (vowel index). StyleTTS2 only:
+# OmniVoice would get an ARPAbet transcription, and an English accent, for each. Bump the tts
+# fingerprint version when this list changes.
+BUILTIN_STRESS = {
+    "хаґінґ": 0, "ґітхаб": 1, "ґітлаб": 1, "ютуб": 1, "студіо": 0, "пайтон": 0, "докер": 0, "лінукс": 0,
+    "віндовс": 0, "макбук": 1, "айфон": 1, "джемма": 0, "містраль": 1, "оллама": 1, "енвідіа": 1, "куда": 0,
+    "кубернетіс": 2, "джаваскрипт": 2, "її": 1,
+    **{f"двобітн{e}": 1 for e in ("ий", "а", "е", "у", "ої", "ому", "им", "ій", "і", "их", "им", "ими")},
+    **{f"чотирибітн{e}": 3 for e in ("ий", "а", "е", "у", "ої", "ому", "им", "ій", "і", "их", "ими")},
+    **{f"восьмибітн{e}": 2 for e in ("ий", "а", "е", "у", "ої", "ому", "им", "ій", "і", "их", "ими")},
+}
+
+
 class StressFixer:
     """Turns stress information into something the TTS follows.
 
@@ -148,6 +161,8 @@ class StressFixer:
     def __init__(self, mode: str = "auto", dict_paths: list[Path] | None = None, target: str = "arpa"):
         self.mode, self.target = mode, target
         self.user = load_dict(dict_paths or []) if mode != "off" else {}
+        if mode != "off" and target == "acute":
+            self.user = {**BUILTIN_STRESS, **self.user}  # the user's dictionary wins
 
     def apply(self, text: str) -> str:
         if not text:
@@ -175,9 +190,13 @@ class HomographFinder:
     that the LLM can pick the right one from the meaning of the sentence.
     """
 
-    def __init__(self):
+    def __init__(self, broad: bool = False):
+        """broad: also pronouns, adverbs and other function words whose stress the dictionary cannot
+        settle (са́мий/сами́й). Right for StyleTTS2, where a mark costs nothing; OmniVoice would get an
+        ARPAbet transcription (and an English accent) for each of them."""
         import logging
 
+        self.broad = broad
         logging.getLogger("stanza").setLevel(logging.ERROR)
         from ukrainian_word_stress import OnAmbiguity, Stressifier
 
@@ -201,8 +220,9 @@ class HomographFinder:
             return []
         out = []
         for n, (w, a, c) in enumerate(zip(words, amb, ctx)):
-            if any(ch in w for ch in (ACUTE, "´", "+")) or _vowel_count(w) < 2 or w.lower() in COMMON_SKIP \
-                    or pos[n] in FUNCTION_POS:
+            if any(ch in w for ch in (ACUTE, "´", "+")) or _vowel_count(w) < 2:
+                continue
+            if not self.broad and (w.lower() in COMMON_SKIP or pos[n] in FUNCTION_POS):
                 continue
             # Only words whose stress the dictionary cannot settle even with grammar (за́мок/замо́к).
             # Each transcription adds a little English accent, so common words are left alone.
@@ -287,6 +307,30 @@ def apply_marks(text: str, marks: dict[int, int]) -> str:
         return with_acute(m.group(0), marks[n]) if n in marks else m.group(0)
 
     return _WORD.sub(repl, text) if marks else text
+
+
+# Derivational prefixes that leave the stem's stress alone («відфільтрува́ти» ← «фільтрува́ти»).
+# «ви-» is left out: it takes the stress in perfective verbs (ви́йти), and single letters are too risky.
+STEM_PREFIXES = ("недо", "пере", "роз", "без", "над", "під", "від", "об", "за", "на", "по", "при", "про",
+                 "до", "дво", "три", "пів", "між", "спів")
+
+
+def stress_by_prefix(word: str, resolver) -> int | None:
+    """Stress (vowel index) of an unknown derived word from a known stem.
+
+    `resolver` is a dict {stem: vowel index} or a callable returning that index (or None).
+    Returns None when no prefix leads to a known stem of at least two vowels.
+    """
+    low = word.lower()
+    look = resolver.get if isinstance(resolver, dict) else resolver
+    for p in sorted(STEM_PREFIXES, key=len, reverse=True):
+        stem = low[len(p):]
+        if not low.startswith(p) or _vowel_count(stem) < 2:
+            continue
+        idx = look(stem)
+        if idx is not None:
+            return idx + _vowel_count(p)
+    return None
 
 
 def default_dict_paths(extra: str | None, work: Path | None = None) -> list[Path]:

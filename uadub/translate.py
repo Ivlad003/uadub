@@ -30,7 +30,7 @@ C. Idioms, proverbs, set phrases, jokes and wordplay: never translate them liter
 
 Rules:
 1. Output exactly one translation per input line with the same "id". Never merge, split, skip or reorder lines. If a sentence continues across lines, break the Ukrainian at a natural point so each line still matches its own timing.
-2. Length: every line has "max_syl" (Ukrainian syllables = vowel letters а е є и і ї о у ю я) and "max_words" — what fits the time of the original line at a natural pace. Stay within them: at most max_words words. Shorter is fine when nothing is lost; never pad. If the faithful translation does not fit, condense in this order: drop fillers and connectives, drop what the neighbouring line already says, use shorter synonyms, simplify the syntax. Never drop facts, names, numbers, on-screen labels or the object of an instruction (what to click, where to go).
+2. Length: every line has "max_syl" (Ukrainian syllables = vowel letters а е є и і ї о у ю я) and "max_words" — what fits the time of the original line at a natural pace. Aim for 80–100 % of max_words: at most max_words, and not much shorter, otherwise the voice falls silent while the speaker is still talking. Never pad with words that say nothing. If the faithful translation does not fit, condense in this order: drop fillers and connectives, drop what the neighbouring line already says, use shorter synonyms, simplify the syntax. Never drop facts, names, numbers, on-screen labels or the object of an instruction (what to click, where to go).
 3. Spoken style. These lines are spoken aloud, not read: short sentences; verbs instead of chains of nouns in the genitive («процесу завантаження моделей» → «як завантажити модель»); no participial constructions («натиснувши», «обраний користувачем») — use a clause with a verb; a natural spoken word order; the connectives people actually say (тож, отже, а ще, далі, тепер). Keep the tone of the original (casual, formal, humorous). Use correct literary Ukrainian, no Russianisms, surzhyk or word-for-word calques (e.g. concessive «як би ви не зробили» is a calque — write «хоч як ви зробите» / «хоч би як ви зробили»; «в кінці кінців» → «зрештою»; «приймати участь» → «брати участь»). Use the form of address given in "address" (ти/ви) in every line.
 4. The lines are one continuous speech: read your own "previous" translations and do not start two neighbouring lines with the same word, do not repeat a phrase the previous line already used (unless the original repeats it), and vary the connectives.
 5. {gender_rule}
@@ -60,6 +60,7 @@ Read the whole transcript (it comes from speech recognition and may contain mish
 {glossary_rule} List named characters (people) in "characters"; empty list if none. List every idiom or figure of speech in "idioms" (empty list if none) and obvious speech-recognition errors in "asr_fixes".{lang_rules}"""
 
 STRESS_SYSTEM = """You are a Ukrainian pronunciation expert. Each item is a word inside a sentence that will be read aloud. The word is a homograph: its stress depends on its meaning or grammatical form. Pick the variant whose stressed vowel (shown in UPPERCASE) is correct in this sentence. Examples: зАмок = castle, замОк = lock; Атлас = book of maps, атлАс = fabric; мУка = torment, мукА = flour; рУки = nominative plural (мої рУки), рукИ = genitive singular (немає рукИ); гОри = mountains, з горИ = from the mountain.
+Frequent pairs: сАмий / та сАма / ті сАмі = the same (той сАмий список, те сАме вікно); самИй / самА / самІ = by itself, the very (система самА підбере, ви самІ оберете, самИй низ); рОзмір = size (the usual noun); прАвильний is the standard form.
 If both variants are acceptable in this sentence (free variation, e.g. нАтискати/натискАти), answer "both" — then nothing is marked.
 Return ONLY JSON: {"items": [{"id": "<id>", "answer": "<the correct variant, copied exactly, or both>"}]}"""
 
@@ -79,10 +80,15 @@ SPELL_SYSTEM = """You prepare Ukrainian dubbing lines for a speech synthesizer t
 Return ONLY JSON: {"lines": [{"id": <int>, "tts": "..."}]}"""
 
 SHORTEN_SYSTEM = """You edit Ukrainian dubbing lines that are too long for their time slots.
-Each line gives "src" (the original), "uk" (the current translation), "over" (how many syllables too long it is; syllables = vowel letters а е є и і ї о у ю я), "max_words" (the word count that fits), and the neighbouring lines "previous" / "next" as they will be spoken. Rewrite "uk" so that it fits: at most "max_words" words.
+Each line gives "src" (the original), "uk" (the current translation), "over" (how many syllables too long it is; syllables = vowel letters а е є и і ї о у ю я), "max_words" (the word count that fits), and the neighbouring lines "previous" / "next" as they will be spoken. Rewrite "uk" so that it fits: at most "max_words" words, and cut only as much as needed — keep at least 80 % of "max_words", a line much shorter than its time leaves a hole in the dub.
 Cut in this order: 1) fillers and connectives (тож, отже, просто, власне, насправді); 2) what the previous or next line already says; 3) shorter synonyms; 4) rebuild the sentence with a verb instead of noun chains; a short Ukrainian idiom often says more than a long literal phrase. Never drop facts, names, numbers, on-screen labels in quotes, or the object of an instruction (what to click, where to go) — if nothing else can go, keep those and cut description.
 The result must stay a grammatical, complete, natural spoken Ukrainian sentence in the same style — never leave half of a set phrase (wrong: «Коли справа стає завантаження»; right: «Коли йдеться про завантаження»). Keep the form of address (ти/ви).{attempt}
 Follow the same "tts" rule: if the new "uk" has digits, symbols, Latin letters or abbreviations, add "tts" with everything spelled out as pronounced (abbreviations letter by letter with hyphens, versions digit by digit: «квен три шість»); otherwise omit it.
+Return ONLY JSON: {"lines": [{"id": <int>, "uk": "...", "tts": "..."}]}"""
+
+EXPAND_SYSTEM = """You complete Ukrainian dubbing lines that came out much shorter than their time slot: the voice would fall silent while the speaker on screen is still talking.
+Each line gives "src" (the original), "uk" (the current, condensed translation), "max_words" (the word count that fits the time) and the neighbouring lines "previous" / "next" as they will be spoken. Rewrite "uk" as a fuller translation of "src": restore the details, examples and clauses that were condensed away, in the same spoken style and form of address, aiming for 80–100 % of "max_words". Never pad with words that say nothing, never add facts that are not in "src", and keep every name, number and quoted label.
+Follow the same "tts" rule: if the new "uk" has digits, symbols, Latin letters or abbreviations, add "tts" with everything spelled out as pronounced (abbreviations letter by letter with hyphens, versions digit by digit); otherwise omit it.
 Return ONLY JSON: {"lines": [{"id": <int>, "uk": "...", "tts": "..."}]}"""
 
 SHORTEN_RETRY = " This is the second attempt: the previous rewrite was still too long by the given number of syllables, so cut more decisively — rebuild the sentence rather than trimming words."
@@ -451,13 +457,50 @@ def unify_pronunciations(units: list[dict], pronunciations: dict[str, str] | Non
 
 PAUSE_RESERVE = 0.3  # seconds of the slot kept for the pause before the next line
 SYL_PER_WORD = 2.4  # average spoken Ukrainian
+SHORTEN_FLOOR = 0.7  # a rewrite shorter than this share of the budget threw away too much …
+SHORTEN_FLOOR_UNLESS = 1.3  # … unless the line was over the budget by more than this factor
 
 
-def set_budgets(units: list[dict], *, rate: float, max_speed: float = 1.25, pause: float = PAUSE_RESERVE) -> None:
+EXPAND_BELOW = 0.7  # a line under this share of its budget leaves the voice silent while the speaker talks
+
+
+def needs_expansion(*, syl: int, max_syl: int, src: str) -> bool:
+    """A translation far shorter than its time, of a source line with enough content to restore."""
+    return syl < EXPAND_BELOW * max_syl and len(src.split()) >= 5
+
+
+def expand_ok(*, old_syl: int, new_syl: int, max_syl: int) -> bool:
+    """Accept a fuller rewrite only if it is longer and still within the budget (+8 %)."""
+    return new_syl > old_syl and new_syl <= 1.08 * max_syl
+
+
+def expand_outcome(*, old_syl: int, new_syl: int, max_syl: int) -> str:
+    """What to do with a fuller rewrite: the model overshoots the budget by 30–50 % more often than
+    not, so a rewrite up to 1.4× the budget is kept and sent through one shortening pass (reverted
+    if it is still over 1.15×); beyond that a trim will not get there."""
+    if new_syl <= old_syl:
+        return "reject"
+    if new_syl <= 1.08 * max_syl:
+        return "accept"
+    return "shorten" if new_syl <= 1.4 * max_syl else "reject"
+
+
+def shorten_ok(*, old_syl: int, new_syl: int, max_syl: int) -> bool:
+    """Accept a shortened line only if it is shorter and did not undershoot the budget badly:
+    a 26-syllable line for a budget of 24 must not come back as 14 (a hole in the dub)."""
+    if new_syl >= old_syl:
+        return False
+    return new_syl >= SHORTEN_FLOOR * max_syl or old_syl > SHORTEN_FLOOR_UNLESS * max_syl
+
+
+def set_budgets(units: list[dict], *, rate: float, max_speed: float = 1.25, pause: float = PAUSE_RESERVE,
+                fill: float | None = None) -> None:
     # Budget for a natural pace with a breath before the next line. A little of the allowed
     # speed-up is assumed (40 % of it), otherwise fast speakers get heavily abridged translations;
-    # the rest stays in reserve, so lines are rarely sped up at all (ADR-029).
-    fill = 1.0 + (min(max_speed, 1.3) - 1.0) * 0.4
+    # the rest stays in reserve, so lines are rarely sped up at all (ADR-029). Engines driven at the
+    # dub's pace pass `rate=pace, fill=1.05` (the pace tolerance, ADR-033).
+    if fill is None:
+        fill = 1.0 + (min(max_speed, 1.3) - 1.0) * 0.4
     for u in units:
         spoken = max(u["end"] - u["start"], slot(u) - pause)
         u["max_syl"] = max(3, math.floor(spoken * rate * fill))
@@ -467,13 +510,13 @@ def set_budgets(units: list[dict], *, rate: float, max_speed: float = 1.25, paus
 def translate_units(llm: LLM, units: list[dict], *, rate: float, gender: str | None,
                     glossary_path: str | None, max_speed: float = 1.25, stress: str = "auto",
                     source_lang: str = "en", domain: str | None = None, shared_brief: dict | None = None,
-                    edge: dict | None = None, log=print) -> dict:
+                    edge: dict | None = None, engine: str = "omni", fill: float | None = None, log=print) -> dict:
     """domain: None — plain Ukrainian for everyone; "auto" or a field name — specialist jargon of that field."""
     from .config import LANGS
 
     src_name = LANGS.get(source_lang, (None, source_lang))[1]
     lang_rules = LANG_RULES.get(source_lang, "")
-    set_budgets(units, rate=rate, max_speed=max_speed)
+    set_budgets(units, rate=rate, max_speed=max_speed, fill=fill)
 
     if shared_brief is not None:  # a part of a long video: one brief for the whole video
         log("   • спільний бриф довгого відео")
@@ -523,13 +566,33 @@ def translate_units(llm: LLM, units: list[dict], *, rate: float, gender: str | N
         log(f"   • переклад {ci + 1}/{n_chunks}")
         _translate_chunk(llm, system, context, units, chunk, by_id, fixed_gender=gender, edge=edge)
 
-    for round_no in (1, 2):
-        too_long = [u for u in units if u.get("uk") and _syl(u) > u["max_syl"] * 1.08]
+    for round_no in (1, 2, 3):  # the third pass only for lines still well over (they cause the drift)
+        too_long = [u for u in units if u.get("uk") and _syl(u) > u["max_syl"] * (1.08 if round_no < 3 else 1.15)]
         if not too_long:
             break
         log(f"   • скорочення задовгих реплік ({len(too_long)}), прохід {round_no}")
         for i in range(0, len(too_long), CHUNK):
             _shorten(llm, too_long[i : i + CHUNK], units=units, context=context, attempt=round_no)
+
+    short = [u for u in units if u.get("uk") and needs_expansion(syl=_syl(u), max_syl=u["max_syl"], src=u["text"])]
+    if short:  # the opposite failure: a hole in the dub where the translation came out far too short
+        log(f"   • доповнення закоротких реплік ({len(short)})")
+        for i in range(0, len(short), CHUNK):
+            over = _expand(llm, short[i : i + CHUNK], units=units, context=context)
+            if over:  # the fuller line overshot: one trim, and back to the old line if still far over
+                _shorten(llm, [u for u, _ in over], units=units, context=context, attempt=1)
+                for u, (old_uk, old_tts) in over:
+                    if _syl(u) > 1.15 * u["max_syl"]:
+                        u["uk"] = old_uk
+                        if old_tts:
+                            u["tts"] = old_tts
+                        else:
+                            u.pop("tts", None)
+
+    same_start = repeated_starts(units)
+    if same_start:
+        log(f"   • різні початки сусідніх реплік ({len(same_start)})")
+        _vary_starts(llm, [units[i] for i in same_start], units=units, context=context)
 
     fixed = fix_anglicisms(llm, units, glossary=glossary, domain=expert, log=log)
     if expert:  # many on-screen labels stay in Latin: make sure each is spelled for the voice
@@ -537,7 +600,8 @@ def translate_units(llm: LLM, units: list[dict], *, rate: float, gender: str | N
     same = unify_pronunciations(units, glossary_pronunciations(glossary))
     if same:
         log(f"   • однакова вимова назв: виправлено {same} реплік")
-    stats = resolve_homographs(llm, units, log=log) if stress == "auto" else {}
+    # StyleTTS2 follows every mark at no cost, so it also gets the function-word homographs (са́мий/сами́й)
+    stats = resolve_homographs(llm, units, broad=(engine == "st"), log=log) if stress == "auto" else {}
     return {"brief": brief, "gender": gender, "homographs": stats, "anglicism_fixes": fixed,
             "domain": field or None, "domain_mode": bool(domain)}
 
@@ -674,7 +738,18 @@ def _pick_variant(item: dict, answer) -> int | None:
     return None
 
 
-def resolve_homographs(llm: LLM, units: list[dict], *, log=print) -> dict:
+def _fallback_marks(ask: list[dict], marks: dict[int, dict[int, int]], *, broad: bool) -> dict[int, dict[int, int]]:
+    """Homographs the two votes did not settle: for StyleTTS2 (`broad`) take the dictionary's first
+    variant — a deterministic choice beats the engine's guess, and the mark costs nothing there."""
+    out = {ui: dict(m) for ui, m in marks.items()}
+    if broad:
+        for a in ask:
+            ui, n = map(int, a["id"].split(":"))
+            out.setdefault(ui, {}).setdefault(n, a["_options"][0])
+    return out
+
+
+def resolve_homographs(llm: LLM, units: list[dict], *, broad: bool = False, log=print) -> dict:
     """Mark the stress of homographs in each line's `tts` text with an acute accent.
 
     Grammatical homographs are resolved by ukrainian-word-stress; for semantic ones the LLM
@@ -684,7 +759,7 @@ def resolve_homographs(llm: LLM, units: list[dict], *, log=print) -> dict:
     from .stress import HomographFinder, apply_marks, variant_caps
 
     try:
-        finder = HomographFinder()
+        finder = HomographFinder(broad=broad)
     except Exception as e:  # stanza model missing etc. — stress is a nice-to-have
         log(f"   • наголоси омографів пропущено: {e}")
         return {}
@@ -725,6 +800,7 @@ def resolve_homographs(llm: LLM, units: list[dict], *, log=print) -> dict:
                 if votes[1].get(aid) == choice:
                     ui, n = map(int, aid.split(":"))
                     marks.setdefault(ui, {})[n] = choice
+    marks = _fallback_marks(ask, marks, broad=broad)
     for ui, m in marks.items():
         units[ui]["tts"] = apply_marks(speech_text(units[ui]), m)
     return {"marked": sum(map(len, marks.values())), "homographs": len(ask)}
@@ -799,6 +875,96 @@ def _translate_chunk(llm, system, context, units, chunk, by_id, fixed_gender=Non
         by_id[uid]["untranslated"] = True
 
 
+def _neighbour_payload(items: list[dict], units: list[dict], context: dict | None, extra) -> dict:
+    pos = {id(u): i for i, u in enumerate(units)}
+
+    def neighbour(u: dict, step: int) -> str:
+        i = pos.get(id(u), -1) + step
+        return str(units[i].get("uk") or units[i]["text"]) if 0 <= i < len(units) else ""
+
+    return {**{k: v for k, v in (context or {}).items() if k in ("summary", "style", "address")},
+            "lines": [{"id": u["id"], "src": u["text"], "uk": u["uk"],
+                       "max_words": u.get("max_words") or max(2, round(u["max_syl"] / SYL_PER_WORD)),
+                       "previous": neighbour(u, -1), "next": neighbour(u, 1), **extra(u)} for u in items]}
+
+
+def _first_word(text: str) -> str:
+    m = re.search(r"[^\W\d_]+(?:['’-][^\W\d_]+)*", text or "")
+    return m.group(0).lower() if m else ""
+
+
+def repeated_starts(units: list[dict]) -> list[int]:
+    """Indices of lines that begin with the same word as the line before them (the ear notices)."""
+    out = []
+    for i in range(1, len(units)):
+        a, b = _first_word(units[i - 1].get("uk", "")), _first_word(units[i].get("uk", ""))
+        if a and a == b:
+            out.append(i)
+    return out
+
+
+VARY_SYSTEM = """You polish Ukrainian dubbing lines. Each line begins with the same word as the line spoken just before it ("previous"), which sounds mechanical. Rewrite "uk" so that it begins differently — same meaning, same spoken style and form of address, about the same length (±10 % of the words), keeping every name, number and quoted label. Do not change "previous".
+Follow the same "tts" rule: if the new "uk" has digits, symbols, Latin letters or abbreviations, add "tts" with everything spelled out as pronounced; otherwise omit it.
+Return ONLY JSON: {"lines": [{"id": <int>, "uk": "...", "tts": "..."}]}"""
+
+
+def _vary_starts(llm: LLM, items: list[dict], *, units: list[dict], context: dict | None = None) -> None:
+    payload = _neighbour_payload(items, units, context, lambda u: {})
+    try:
+        data = _ask(llm, VARY_SYSTEM, json.dumps(payload, ensure_ascii=False), max_tokens=400 + 260 * len(items))
+    except RuntimeError:
+        return
+    by_id = {u["id"]: u for u in items}
+    pos = {id(u): i for i, u in enumerate(units)}
+    for item in data.get("lines", []):
+        try:
+            u = by_id[int(item.get("id"))]
+        except (KeyError, TypeError, ValueError):
+            continue
+        uk_new = str(item.get("uk", "")).strip()
+        tts_new = _clean_tts(uk_new, str(item.get("tts") or "").strip())
+        prev = units[pos[id(u)] - 1] if pos.get(id(u), 0) > 0 else None
+        new_syl = syllables(to_speech_text(tts_new or uk_new)) if uk_new else 0
+        if (uk_new and prev is not None and _first_word(uk_new) != _first_word(prev.get("uk", ""))
+                and 0.85 * _syl(u) <= new_syl <= 1.1 * _syl(u) and not lost_facts(u["uk"], uk_new)):
+            u["uk"] = uk_new
+            if tts_new:
+                u["tts"] = tts_new
+            else:
+                u.pop("tts", None)
+
+
+def _expand(llm: LLM, items: list[dict], *, units: list[dict], context: dict | None = None) -> list[tuple[dict, tuple]]:
+    """Fuller rewrites of lines far under their time. Returns the lines that came back over the
+    budget (with their previous version), for one shortening pass and a possible revert."""
+    payload = _neighbour_payload(items, units, context, lambda u: {})
+    try:
+        data = _ask(llm, EXPAND_SYSTEM, json.dumps(payload, ensure_ascii=False), max_tokens=400 + 300 * len(items))
+    except RuntimeError:
+        return []
+    by_id = {u["id"]: u for u in items}
+    over: list[tuple[dict, tuple]] = []
+    for item in data.get("lines", []):
+        try:
+            u = by_id[int(item.get("id"))]
+        except (KeyError, TypeError, ValueError):
+            continue
+        uk_new = str(item.get("uk", "")).strip()
+        tts_new = _clean_tts(uk_new, str(item.get("tts") or "").strip())
+        new_syl = syllables(to_speech_text(tts_new or uk_new)) if uk_new else 0
+        outcome = expand_outcome(old_syl=_syl(u), new_syl=new_syl, max_syl=u["max_syl"]) if uk_new else "reject"
+        if outcome == "reject" or lost_facts(u["uk"], uk_new):
+            continue
+        if outcome == "shorten":
+            over.append((u, (u["uk"], u.get("tts"))))
+        u["uk"] = uk_new
+        if tts_new:
+            u["tts"] = tts_new
+        else:
+            u.pop("tts", None)
+    return over
+
+
 def _shorten(llm: LLM, items: list[dict], *, units: list[dict] | None = None, context: dict | None = None,
              attempt: int = 1) -> None:
     units = units or items
@@ -825,7 +991,8 @@ def _shorten(llm: LLM, items: list[dict], *, units: list[dict] | None = None, co
             continue
         uk_new = str(item.get("uk", "")).strip()
         cand = {"uk": uk_new, "tts": _clean_tts(uk_new, str(item.get("tts") or "").strip())}
-        if cand["uk"] and syllables(to_speech_text(cand["tts"] or cand["uk"])) < _syl(u) and not lost_facts(u["uk"], cand["uk"]):
+        new_syl = syllables(to_speech_text(cand["tts"] or cand["uk"])) if cand["uk"] else 0
+        if cand["uk"] and shorten_ok(old_syl=_syl(u), new_syl=new_syl, max_syl=u["max_syl"]) and not lost_facts(u["uk"], cand["uk"]):
             u["uk"] = cand["uk"]
             if cand["tts"]:
                 u["tts"] = cand["tts"]
