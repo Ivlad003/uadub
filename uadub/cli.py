@@ -223,6 +223,7 @@ def run_pipeline(opt: Options, *, redo: str | None = None, stop_after: str | Non
                         print(f"   • застосовано правки з {REVIEW}: {n} реплік", flush=True)
                 else:
                     print(f"   • {REVIEW} застарів (переклад змінився) — не застосовую", flush=True)
+            fp = opt.fingerprint(stage)  # again: the review may have added words to stress.txt
             fp["review"] = review_hash(w)
         if redo == stage:
             dirty = True

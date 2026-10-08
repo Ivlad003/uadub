@@ -377,6 +377,8 @@ def mux(video: Path, audio_wav: Path, out: Path, *, srt: Path | None, keep_origi
     info = probe(video)
     kinds = {s.get("codec_type") for s in info.get("streams", [])}
     has_video, has_audio = "video" in kinds, "audio" in kinds
+    if srt and srt.stat().st_size == 0:  # a part with no speech — ffmpeg can't open an empty .srt
+        srt = None
     sub_codec = "mov_text" if out.suffix.lower() in {".mp4", ".m4v", ".mov", ".m4a"} else "srt"
     rng = ["-ss", f"{clip[0]:.6f}", "-t", f"{clip[1]:.6f}"] if clip else []
     cmd = ["ffmpeg", "-y", *rng, "-i", str(video), "-i", str(audio_wav)]
