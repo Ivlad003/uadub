@@ -2334,3 +2334,19 @@ def test_doctor_report_names_problems_and_fixes():
            "llm": "mlx-community/gemma-4-26b-a4b-it-4bit", "ffmpeg": "/opt/homebrew/bin/ffmpeg"}
     text, ok = render(mac)
     assert ok and "MLX" in text
+
+
+def test_prefetch_plan_per_backend(tmp_path):
+    from uadub.asr import CT2_WHISPER, ONNX_PARAKEET
+    from uadub.cli import prefetch_plan
+    from uadub.config import DEFAULT_ASR, DEFAULT_LLM, OMNI_MODEL, ST_MODEL, WHISPER_ASR, Options
+
+    base = dict(input="", output="", workdir="", voice="st")
+    mac = prefetch_plan(Options(asr_backend="mlx", asr_model=DEFAULT_ASR, llm=DEFAULT_LLM, **base), all_engines=True)
+    assert DEFAULT_ASR in mac["hf_repos"] and WHISPER_ASR in mac["hf_repos"] and DEFAULT_LLM in mac["hf_repos"]
+    assert ST_MODEL in mac["hf_repos"] and OMNI_MODEL in mac["hf_repos"] and mac["ollama_models"] == []
+    pc = prefetch_plan(Options(asr_backend="onnx", asr_model=ONNX_PARAKEET, llm="ollama:gemma3:12b", **base), all_engines=False)
+    assert pc["onnx_models"] == [ONNX_PARAKEET] and pc["ct2_models"] == [] and pc["ollama_models"] == ["gemma3:12b"]
+    assert not any("mlx-community" in r for r in pc["hf_repos"]) and ST_MODEL in pc["hf_repos"]
+    pc_all = prefetch_plan(Options(asr_backend="onnx", asr_model=ONNX_PARAKEET, llm="ollama:gemma3:12b", **base), all_engines=True)
+    assert pc_all["ct2_models"] == [CT2_WHISPER]

@@ -333,20 +333,58 @@ def _hf_cached(repo: str, cache: Path | None = None) -> bool:
         return False
 
 
+def prefetch_plan(opt: Options, all_engines: bool) -> dict:
+    """What `--prefetch` downloads for this setup; pure, so it can be tested."""
+    from .asr import CT2_WHISPER, ONNX_PARAKEET
+    from .llm import is_local_mlx
+
+    plan: dict = {"hf_repos": [], "onnx_models": [], "ct2_models": [], "ollama_models": []}
+    if opt.asr_backend == "mlx":
+        plan["hf_repos"].append(opt.asr_model)
+        if all_engines and WHISPER_ASR not in plan["hf_repos"]:
+            plan["hf_repos"].append(WHISPER_ASR)  # other source languages (Korean, …)
+    elif opt.asr_backend == "onnx":
+        plan["onnx_models"].append(opt.asr_model)
+        if all_engines:
+            plan["ct2_models"].append(CT2_WHISPER)
+    else:
+        plan["ct2_models"].append(opt.asr_model)
+        if all_engines:
+            plan["onnx_models"].append(ONNX_PARAKEET)
+    if is_local_mlx(opt.llm):
+        plan["hf_repos"].append(opt.llm)
+    elif opt.llm.startswith("ollama:"):
+        plan["ollama_models"].append(opt.llm.partition(":")[2])
+    if all_engines or opt.engine == "omni":
+        plan["hf_repos"].append(OMNI_MODEL)
+    if all_engines or opt.engine == "st":
+        plan["hf_repos"].append(ST_MODEL)
+    return plan
+
+
 def prefetch(opt: Options, all_engines: bool) -> None:
     """Download every model the chosen setup needs, so later runs work fully offline."""
     from huggingface_hub import snapshot_download
 
-    from .llm import is_local_mlx
-
-    repos = [opt.asr_model] + ([opt.llm] if is_local_mlx(opt.llm) else [])
-    if all_engines and WHISPER_ASR not in repos:
-        repos.append(WHISPER_ASR)  # other source languages (Korean, …)
-    if all_engines or opt.engine == "omni":
-        repos.append(OMNI_MODEL)
-    for repo in repos:
+    plan = prefetch_plan(opt, all_engines)
+    for repo in plan["hf_repos"]:
         print(f"• {repo}", flush=True)
         snapshot_download(repo)
+    for name in plan["onnx_models"]:
+        print(f"• {name} (onnx-asr)", flush=True)
+        from .asr import _onnx_model_dir
+
+        _onnx_model_dir(name)  # real files: onnxruntime refuses the symlinks of the HF cache
+    for name in plan["ct2_models"]:
+        print(f"• {name} (faster-whisper)", flush=True)
+        from faster_whisper import WhisperModel
+
+        WhisperModel(name, device="cpu", compute_type="int8")
+    for name in plan["ollama_models"]:
+        print(f"• ollama pull {name}", flush=True)
+        import subprocess
+
+        subprocess.run(["ollama", "pull", name], check=False)
     print("• модель сепарації", opt.sep_model, flush=True)
     from audio_separator.separator import Separator
 
@@ -362,7 +400,6 @@ def prefetch(opt: Options, all_engines: bool) -> None:
         print("• StyleTTS2-ukrainian + голоси", flush=True)
         from huggingface_hub import hf_hub_download
 
-        snapshot_download(ST_MODEL)
         for name in ST_VOICES:
             hf_hub_download(ST_SPACE, f"voices/{name}.pt", repo_type="space")
     if all_engines or opt.engine == "omni":
@@ -370,10 +407,10 @@ def prefetch(opt: Options, all_engines: bool) -> None:
         from .tts import OmniEngine
 
         OmniEngine(steps=8).model.generate(text="Перевірка.", language="uk", num_step=4)
-        print("• модель наголосів (stanza uk)", flush=True)
-        from .stress import StressFixer
+    print("• модель наголосів (stanza uk)", flush=True)  # needed by every engine (st) and by translate
+    from .stress import StressFixer
 
-        StressFixer("auto").apply("Старий замок.")
+    StressFixer("auto").apply("Старий замок.")
     print("\nУсе завантажено — далі uadub працює офлайн.")
 
 

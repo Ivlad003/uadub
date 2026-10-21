@@ -5,10 +5,10 @@ description = "Локальний AI-дубляж відео українськ�
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "parakeet-mlx>=0.5.3",
-    "mlx-whisper>=0.4.2",  # non-English speech (Korean, …)
-    "mlx-lm>=0.32.0",
-    "audio-separator[cpu]>=0.45.0",
+    "parakeet-mlx>=0.5.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-whisper>=0.4.2; sys_platform == 'darwin' and platform_machine == 'arm64'",  # non-English speech (Korean, …)
+    "mlx-lm>=0.32.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "audio-separator>=0.45.0",
     "audioread>=3.0",  # used by audio-separator but not declared by it
     "ukrainian-tts>=6.0.2",
     "omnivoice>=0.2.1",
@@ -25,10 +25,19 @@ dependencies = [
     "num2words>=0.5.14",
     "numpy>=2.0",
     "tqdm>=4.66",
+    "torch>=2.6",
+    "torchaudio>=2.6",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# Apple Silicon: the MLX stack above is enough; audio-separator runs on PyTorch MPS.
+mac = ["audio-separator[cpu]>=0.45.0"]
+# Linux / Windows with NVIDIA: Parakeet via ONNX Runtime CUDA, Whisper via CTranslate2, separation on CUDA.
+# av<17: faster-whisper 1.2.x breaks with PyAV 19.
+cuda = ["onnx-asr[hub]>=0.7", "onnxruntime-gpu>=1.22,<1.24", "faster-whisper>=1.1", "av<17", "audio-separator[gpu]>=0.45.0"]
+# Any machine without a GPU (slow, complete): the same backends on CPU.
+cpu = ["onnx-asr[cpu,hub]>=0.7", "faster-whisper>=1.1", "av<17", "audio-separator[cpu]>=0.45.0"]
 
 [project.scripts]
 uadub = "uadub.cli:main"
@@ -43,6 +52,15 @@ packages = ["uadub"]
 [tool.uv]
 # styletts2-inference pins numpy<2 without needing it; the rest of the stack needs numpy 2.
 override-dependencies = ["numpy>=2.0"]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }]
+torchaudio = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }]
 
 [tool.hatch.metadata]
 allow-direct-references = true
