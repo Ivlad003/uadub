@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from .config import (DEFAULT_LLM, DEFAULT_SEP_MODEL, FAST_SEP_MODEL, LANGS, OMNI_MODEL, ST_MODEL,
-                     ST_SPACE, ST_VOICES, STAGES, UKR_VOICES, WHISPER_ASR, Options, find_st_voice)
+                     ST_SPACE, ST_VOICES, STAGES, UKR_VOICES, WHISPER_ASR, Options, default_llm, find_st_voice)
 
 HEAVY = {"separate", "asr", "translate", "tts"}  # each gets a fresh process → memory fully freed
 STAGE_TITLES = {
@@ -420,8 +420,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--voice", default="dmytro", help=VOICE_HELP)
     p.add_argument("--gender", choices=["male", "female"], help="рід мовця для граматики (зробив/зробила)")
     p.add_argument("--ref-text", help="текст, який звучить у зразку для clone:<файл> (інакше розпізнається)")
-    p.add_argument("--llm", default=os.environ.get("UADUB_LLM") or DEFAULT_LLM, metavar="MODEL",
-                   help=f"модель перекладу: локальна MLX (за замовч. {DEFAULT_LLM}), ollama:<модель> або агент "
+    p.add_argument("--llm", default=None, metavar="MODEL",
+                   help=f"модель перекладу: на Apple Silicon локальна MLX ({DEFAULT_LLM}), на інших платформах Ollama "
+                        "(gemma3:12b або gemma4:26b-a4b за обсягом відеопам'яті), ollama:<модель> або агент "
                         "claude[:модель], opencode[:провайдер/модель], codex[:модель], gemini[:модель] — через вашу "
                         "підписку, не офлайн. За замовч. — змінна UADUB_LLM")
     p.add_argument("--from", dest="source_lang", default="en", metavar="LANG",
@@ -531,6 +532,12 @@ def main(argv: list[str] | None = None) -> None:
     import platform as _platform
 
     from .asr import choose_asr_backend, default_asr_model, has_mlx
+
+    if not args.llm:
+        from .llm import detect_vram
+
+        args.llm = os.environ.get("UADUB_LLM") or default_llm(platform=sys.platform, machine=_platform.machine(),
+                                                              vram_gb=detect_vram())
 
     asr_backend = choose_asr_backend(args.source_lang, platform=sys.platform, machine=_platform.machine(),
                                      has_mlx=has_mlx(), wanted=args.asr_backend)

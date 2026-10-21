@@ -9,6 +9,31 @@ from pathlib import Path
 CACHE_DIR = Path.home() / ".cache" / "uadub"
 
 DEFAULT_LLM = "mlx-community/gemma-4-26b-a4b-it-4bit"
+
+# Off the Mac the translator is a local Ollama server; the model follows the card's memory (ADR-038).
+OLLAMA_SMALL = "gemma3:12b"  # Q4 ≈ 8 GB: fits 12 GB cards, spills a little on 8 GB
+OLLAMA_LARGE = "gemma4:26b-a4b"  # the model the prompts were tuned on (ollama.com/library/gemma4)
+OLLAMA_LARGE_MIN_GB = 18.0
+
+
+def parse_vram(nvidia_smi_output: str) -> float | None:
+    """GB of the largest card from `nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits`."""
+    sizes = []
+    for line in nvidia_smi_output.splitlines():
+        line = line.strip().split(",")[0].strip()
+        if line.isdigit():
+            sizes.append(int(line) / 1024)
+    return round(max(sizes), 1) if sizes else None
+
+
+def pick_ollama_model(vram_gb: float | None) -> str:
+    return OLLAMA_LARGE if vram_gb is not None and vram_gb >= OLLAMA_LARGE_MIN_GB else OLLAMA_SMALL
+
+
+def default_llm(*, platform: str, machine: str, vram_gb: float | None) -> str:
+    if platform == "darwin" and machine == "arm64":
+        return DEFAULT_LLM
+    return f"ollama:{pick_ollama_model(vram_gb)}"
 DEFAULT_ASR = "mlx-community/parakeet-tdt-0.6b-v3"  # English (fast, precise timestamps)
 WHISPER_ASR = "mlx-community/whisper-large-v3-turbo"  # every other source language (Korean, …)
 

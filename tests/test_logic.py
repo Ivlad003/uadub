@@ -2252,3 +2252,39 @@ def test_ukrtts_engine_keeps_cpu_on_apple_silicon(monkeypatch, tmp_path):
         monkeypatch.setattr(uadub.device, "pick", lambda prefer=None, p=picked: p)
         tts.UkrTTSEngine("dmytro")
         assert got["device"] == expected
+
+
+def test_default_llm_and_ollama_model_by_vram():
+    from uadub.config import DEFAULT_LLM, OLLAMA_LARGE, OLLAMA_SMALL, default_llm, parse_vram, pick_ollama_model
+
+    assert parse_vram("8188\n") == 8.0  # MiB → GB (rounded to 0.1)
+    assert parse_vram("12288\n24564\n") == 24.0  # two cards: the largest (Review Focus 1)
+    assert parse_vram("") is None and parse_vram("NVIDIA-SMI has failed") is None
+    assert pick_ollama_model(None) == OLLAMA_SMALL and pick_ollama_model(8.0) == OLLAMA_SMALL
+    assert pick_ollama_model(16.0) == OLLAMA_SMALL and pick_ollama_model(18.0) == OLLAMA_LARGE
+    assert default_llm(platform="darwin", machine="arm64", vram_gb=None) == DEFAULT_LLM
+    assert default_llm(platform="linux", machine="x86_64", vram_gb=24.0) == f"ollama:{OLLAMA_LARGE}"
+    assert default_llm(platform="win32", machine="AMD64", vram_gb=None) == f"ollama:{OLLAMA_SMALL}"
+
+
+def test_ollama_errors_name_the_fix(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    import pytest
+
+    from uadub.llm import OllamaLLM
+
+    def refused(*a, **k):
+        raise urllib.error.URLError("Connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refused)
+    with pytest.raises(RuntimeError, match="ollama serve"):
+        OllamaLLM("gemma3:12b").chat("s", "u")
+
+    def not_found(*a, **k):
+        raise urllib.error.HTTPError("http://127.0.0.1:11434/api/chat", 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", not_found)
+    with pytest.raises(RuntimeError, match="ollama pull gemma3:12b"):  # Review Focus 2
+        OllamaLLM("gemma3:12b").chat("s", "u")

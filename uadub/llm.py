@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.error
 import urllib.request
 
 
@@ -57,8 +58,16 @@ class OllamaLLM(LLM):
         req = urllib.request.Request(
             self.host + path, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise RuntimeError(f"У Ollama немає моделі «{self.model}» — виконайте: ollama pull {self.model}") from None
+            raise RuntimeError(f"Ollama відповів помилкою {e.code} на {path}") from None
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"Ollama не відповідає на {self.host} — запустіть «ollama serve» "
+                               f"або встановіть Ollama (https://ollama.com): {e.reason}") from None
 
     def chat(self, system: str, user: str, *, max_tokens: int = 4096, temperature: float = 0.3) -> str:
         payload = {
@@ -87,6 +96,23 @@ def is_agent_llm(spec: str) -> bool:
 
 def is_local_mlx(spec: str) -> bool:
     return not (spec.startswith("ollama:") or is_agent_llm(spec))
+
+
+def detect_vram() -> float | None:
+    """GB of the largest NVIDIA card, or None without nvidia-smi."""
+    import shutil
+    import subprocess
+
+    from .config import parse_vram
+
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return None
+    return parse_vram(out)
 
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
