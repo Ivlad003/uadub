@@ -29,5 +29,5 @@ def ort_providers(device: str | None) -> list[str]:
     if device == "cuda":
         return ["CUDAExecutionProvider", "CPUExecutionProvider"]
     if device == "mps":
-        return ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+        return ["CPUExecutionProvider"]  # CoreML ran out of memory on Parakeet v3 (M1 Pro, exit -9)
     return ["CPUExecutionProvider"]

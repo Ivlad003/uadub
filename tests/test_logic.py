@@ -2135,7 +2135,7 @@ def test_ort_providers_follow_the_device():
     from uadub.device import ort_providers
 
     assert ort_providers("cuda") == ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    assert ort_providers("mps") == ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    assert ort_providers("mps") == ["CPUExecutionProvider"]  # CoreML runs out of memory on Parakeet v3
     assert ort_providers("cpu") == ["CPUExecutionProvider"]
 
 
