@@ -2305,3 +2305,9 @@ def test_clipboard_and_editor_commands_per_platform():
     assert editor_command(p, platform="darwin", env={}, which=which) == ["open", "-t", p]
     assert editor_command(p, platform="linux", env={"EDITOR": "code --wait"}, which=which) == ["code", "--wait", p]
     assert editor_command(p, platform="linux", env={}, which=lambda n: None) is None
+    quoted = '"C:\\Program Files\\Editor\\ed.exe" --wait'
+    assert editor_command(p, platform="win32", env={"EDITOR": quoted}, which=which) == [
+        "C:\\Program Files\\Editor\\ed.exe",
+        "--wait",
+        p,
+    ]

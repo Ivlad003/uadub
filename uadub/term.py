@@ -63,7 +63,10 @@ def editor_command(path: str, *, platform: str, env: dict, which=shutil.which) -
     """$VISUAL/$EDITOR (blocking, e.g. vim), else the OS text editor: open -t, notepad."""
     editor = env.get("VISUAL") or env.get("EDITOR")
     if editor:
-        return shlex.split(editor, posix=platform != "win32") + [path]
+        parts = shlex.split(editor, posix=platform != "win32")
+        if platform == "win32":  # non-posix split keeps the quotes inside the tokens
+            parts = [t[1:-1] if len(t) >= 2 and t[0] == t[-1] == '"' else t for t in parts]
+        return parts + [path]
     if platform == "darwin" and which("open"):
         return ["open", "-t", path]
     if platform == "win32" and which("notepad"):

@@ -43,6 +43,7 @@ def _env_defaults() -> None:
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    os.environ.setdefault("PYTHONUTF8", "1")  # UTF-8 console for spawn stage children on Windows
 
 
 def _child(stage: str, workdir: str) -> None:
