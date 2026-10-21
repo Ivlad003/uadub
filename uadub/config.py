@@ -97,6 +97,8 @@ class Options:
     ref_text: str | None = None  # transcript of a user-supplied clone reference
     llm: str = DEFAULT_LLM  # mlx-lm repo id or "ollama:<model>"
     asr_model: str = DEFAULT_ASR
+    asr_backend: str = "mlx"  # resolved backend: mlx | onnx | ctranslate (never "auto" once saved)
+    device: str | None = None  # force the PyTorch device (cuda | mps | cpu); None = auto
     separate: bool = True
     sep_model: str = DEFAULT_SEP_MODEL
     glossary: str | None = None
@@ -186,6 +188,8 @@ class Options:
         fp = {k: getattr(self, k) for k in keys}
         if stage == "asr":
             fp["version"] = 4  # snap-to-speech for every ASR (Parakeet ends hid the pauses, ADR-029)
+        if stage == "asr" and self.asr_backend != "mlx":
+            fp["asr_backend"] = self.asr_backend  # the Mac default stays out, so old folders keep their cache
         if stage == "asr" and self.subs and Path(self.subs).exists():
             import hashlib
 

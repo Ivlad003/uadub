@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from .config import (DEFAULT_ASR, DEFAULT_LLM, DEFAULT_SEP_MODEL, FAST_SEP_MODEL, LANGS, OMNI_MODEL, ST_MODEL,
+from .config import (DEFAULT_LLM, DEFAULT_SEP_MODEL, FAST_SEP_MODEL, LANGS, OMNI_MODEL, ST_MODEL,
                      ST_SPACE, ST_VOICES, STAGES, UKR_VOICES, WHISPER_ASR, Options, find_st_voice)
 
 HEAVY = {"separate", "asr", "translate", "tts"}  # each gets a fresh process → memory fully freed
@@ -430,6 +430,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--subs-lang", metavar="LANG",
                    help="мова цих субтитрів (за замовч. = --from); uk — субтитри вже українською, лише озвучити")
     p.add_argument("--asr", default=None, help=argparse.SUPPRESS)
+    p.add_argument("--asr-backend", choices=["auto", "mlx", "onnx", "ctranslate"], default="auto",
+                   help="розпізнавання: auto (MLX на Apple Silicon, інакше onnx для англійської і ctranslate "
+                        "для інших мов), mlx, onnx (Parakeet v3 через onnx-asr), ctranslate (faster-whisper)")
+    p.add_argument("--device", choices=["cuda", "mps", "cpu"], default=None, help=argparse.SUPPRESS)
     p.add_argument("--glossary", help="файл термінів: рядки «English = Українська»")
     p.add_argument("--no-separate", action="store_true",
                    help="не відокремлювати фон: класичний закадровий переклад поверх приглушеного оригіналу")
@@ -524,9 +528,16 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(f"Файл субтитрів не знайдено: {args.subs}")
     if args.source_lang not in LANGS:
         print(f"Увага: мова «{args.source_lang}» не в списку перевірених ({', '.join(LANGS)}), пробую через Whisper.")
+    import platform as _platform
+
+    from .asr import choose_asr_backend, default_asr_model, has_mlx
+
+    asr_backend = choose_asr_backend(args.source_lang, platform=sys.platform, machine=_platform.machine(),
+                                     has_mlx=has_mlx(), wanted=args.asr_backend)
     if args.prefetch:
         opt = Options(input="", output="", workdir="", voice=voice, llm=args.llm,
-                      asr_model=args.asr or (DEFAULT_ASR if args.source_lang == "en" else WHISPER_ASR),
+                      asr_model=args.asr or default_asr_model(asr_backend, args.source_lang), asr_backend=asr_backend,
+                      device=args.device,
                       sep_model=args.sep_model or (FAST_SEP_MODEL if args.fast else DEFAULT_SEP_MODEL))
         prefetch(opt, all_engines=args.all)
         return
@@ -549,7 +560,8 @@ def main(argv: list[str] | None = None) -> None:
     opt = Options(
         input=str(inp), output=str(out), workdir=str(work), voice=voice, gender=args.gender,
         ref_text=args.ref_text, llm=args.llm, separate=not args.no_separate,
-        asr_model=args.asr or (DEFAULT_ASR if args.source_lang == "en" else WHISPER_ASR),
+        asr_model=args.asr or default_asr_model(asr_backend, args.source_lang), asr_backend=asr_backend,
+        device=args.device,
         source_lang=args.source_lang,
         subs=str(Path(args.subs).expanduser().resolve()) if args.subs else None,
         subs_lang=args.subs_lang,

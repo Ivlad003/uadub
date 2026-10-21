@@ -2045,3 +2045,28 @@ def test_assemble_audio_only_passes_through(tmp_path, monkeypatch):
     parts.assemble(tmp_path / "long.mp4", [(tmp_path / "p1", 0.0)], out, master, src_lang="en", keep_original=True,
                    audio_only=True)
     assert seen["audio_only"] is True and seen["lang"] == "en"
+
+
+def test_choose_asr_backend_by_platform_and_language(tmp_path):
+    from uadub.asr import CT2_WHISPER, ONNX_PARAKEET, choose_asr_backend, default_asr_model
+    from uadub.config import DEFAULT_ASR, WHISPER_ASR, Options
+
+    mac = dict(platform="darwin", machine="arm64", has_mlx=True)
+    assert choose_asr_backend("en", **mac) == "mlx" and choose_asr_backend("ko", **mac) == "mlx"
+    assert choose_asr_backend("en", platform="darwin", machine="arm64", has_mlx=False) == "onnx"
+    assert choose_asr_backend("en", platform="linux", machine="x86_64", has_mlx=False) == "onnx"
+    assert choose_asr_backend("ko", platform="win32", machine="AMD64", has_mlx=False) == "ctranslate"
+    assert choose_asr_backend("en", wanted="ctranslate", **mac) == "ctranslate"  # forced
+    import pytest
+    with pytest.raises(ValueError):
+        choose_asr_backend("en", wanted="nemo", **mac)
+    assert default_asr_model("mlx", "en") == DEFAULT_ASR and default_asr_model("mlx", "ko") == WHISPER_ASR
+    assert default_asr_model("onnx", "en") == ONNX_PARAKEET and default_asr_model("ctranslate", "ja") == CT2_WHISPER
+
+    base = dict(input="a.mp4", output="a.uk.mp4", workdir=str(tmp_path), voice="st")
+    assert "asr_backend" not in Options(**base).fingerprint("asr")  # Mac caches stay valid
+    fp = Options(asr_backend="onnx", asr_model=ONNX_PARAKEET, **base).fingerprint("asr")
+    assert fp["asr_backend"] == "onnx" and fp != Options(**base).fingerprint("asr")  # Review Focus 5
+    from uadub.cli import build_parser
+    assert build_parser().parse_args(["x.mp4"]).asr_backend == "auto"
+    assert build_parser().parse_args(["x.mp4", "--asr-backend", "onnx"]).asr_backend == "onnx"
