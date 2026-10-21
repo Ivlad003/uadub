@@ -355,7 +355,7 @@ def stage_tts(opt: Options) -> None:
     if kind in ("st", "st_duo"):
         # StyleTTS2: our marks (homographs from the LLM, the user's dictionary, «+» from review) are
         # written as acute accents; every other word gets its stress from the dictionary inside the engine.
-        eng = St2Engine()
+        eng = St2Engine(device=opt.device)
         fixer = StressFixer("off" if opt.stress == "off" else "dict", dict_paths, target="acute")
         male, female = (arg.split(",") + [arg])[:2] if kind == "st_duo" else (arg, arg)
         voices = [female if (kind == "st_duo" and u.get("gender") == "female") else male for u in units]
@@ -372,7 +372,7 @@ def stage_tts(opt: Options) -> None:
             prev_dub_end, prev_orig_end = start + u["tts_len"], u["end"]
     elif kind in ("preset", "duo_preset"):
         male, female = (arg.split(",") + ["tetiana"])[:2] if kind == "duo_preset" else (arg, arg)
-        eng = UkrTTSEngine(male)
+        eng = UkrTTSEngine(male, device=opt.device)
         # ukrainian-tts stresses words itself; the user dictionary is passed as acute accents
         fixer = StressFixer("off" if opt.stress == "off" else "dict", dict_paths, target="acute")
         for u in tqdm(units, desc="   озвучення", unit="реп"):
@@ -382,7 +382,7 @@ def stage_tts(opt: Options) -> None:
             eng.voice = female if u.get("gender") == "female" else male
             store(u, eng.synth(say(u, fixer)), eng.sr)
     else:
-        eng = OmniEngine(steps=opt.omni_steps)
+        eng = OmniEngine(steps=opt.omni_steps, device=opt.device)
         prompts: list = []
         if kind == "design":
             prompt, sample = eng.design_reference(arg)

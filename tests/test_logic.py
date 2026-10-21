@@ -2185,3 +2185,43 @@ def test_ct2_segments_become_whisper_dicts():
     assert dicts[0]["words"] == [{"word": " Hello", "start": 0.0, "end": 0.4}, {"word": " there.", "start": 0.5, "end": 0.9}]
     assert dicts[1]["words"] == []
     assert [w["w"] for w in whisper_words(dicts)] == ["Hello", "there."]
+
+
+def test_pick_env_and_explicit_prefer(monkeypatch):
+    from uadub.device import pick
+
+    monkeypatch.setenv("UADUB_DEVICE", "cpu")
+    assert pick(None) == "cpu"
+    assert pick("mps") == "mps"  # an explicit choice beats the environment
+
+
+def test_st2_engine_resolves_device_through_pick_once(monkeypatch):
+    import sys
+    import types
+
+    import uadub.device
+    from uadub import tts
+
+    seen, used = [], {}
+
+    class FakeStyleTTS2:
+        def __init__(self, hf_path, device):
+            used["device"] = device
+
+        def eval(self):
+            pass
+
+    fake_models = types.ModuleType("styletts2_inference.models")
+    fake_models.StyleTTS2 = FakeStyleTTS2
+    fake_pkg = types.ModuleType("styletts2_inference")
+    fake_pkg.models = fake_models
+    fake_stress = types.ModuleType("ukrainian_word_stress")
+    fake_stress.Stressifier = lambda **kw: None
+    fake_stress.StressSymbol = types.SimpleNamespace(CombiningAcuteAccent=0)
+    monkeypatch.setitem(sys.modules, "styletts2_inference", fake_pkg)
+    monkeypatch.setitem(sys.modules, "styletts2_inference.models", fake_models)
+    monkeypatch.setitem(sys.modules, "ukrainian_word_stress", fake_stress)
+    monkeypatch.setattr(uadub.device, "pick", lambda prefer=None: (seen.append(prefer), "cpu")[1])
+
+    tts.St2Engine(device="mps")
+    assert seen == ["mps"] and used["device"] == "cpu"

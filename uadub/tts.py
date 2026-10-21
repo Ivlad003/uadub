@@ -23,8 +23,10 @@ from .config import CACHE_DIR, OMNI_MODEL
 class UkrTTSEngine:
     controls_duration = False
 
-    def __init__(self, voice: str, device: str = "cpu"):
+    def __init__(self, voice: str, device: str | None = None):
         from ukrainian_tts.tts import TTS
+
+        from .device import pick
 
         cache = CACHE_DIR / "ukrainian-tts"
         cache.mkdir(parents=True, exist_ok=True)
@@ -32,7 +34,7 @@ class UkrTTSEngine:
         os.chdir(cache)  # the ESPnet config refers to feats_stats.npz by relative path
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                self.tts = TTS(cache_folder=".", device=device)
+                self.tts = TTS(cache_folder=".", device=pick(device))
         finally:
             os.chdir(cwd)
         self.voice = voice
@@ -54,7 +56,9 @@ class OmniEngine:
         import torch
         from omnivoice import OmniVoice
 
-        device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
+        from .device import pick
+
+        device = pick(device)
         dtype = torch.float16 if device in ("mps", "cuda") else torch.float32
         self.torch = torch
         self.model = OmniVoice.from_pretrained(OMNI_MODEL, device_map=device, dtype=dtype)
@@ -109,8 +113,9 @@ class St2Engine:
         from ukrainian_word_stress import Stressifier, StressSymbol
 
         from .config import ST_MODEL
+        from .device import pick
 
-        device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
+        device = pick(device)
         self.torch = torch
         self.model = StyleTTS2(hf_path=ST_MODEL, device=device)
         self.model.eval()
