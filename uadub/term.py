@@ -35,11 +35,23 @@ def shell_cd(path: str | Path) -> str:
     return f"cd {shlex.quote(str(Path(path).expanduser().resolve()))}"
 
 
+def clipboard_command(platform: str, which=shutil.which) -> list[str] | None:
+    """The command that reads stdin into the clipboard on this platform, or None."""
+    if platform == "darwin" and which("pbcopy"):
+        return ["pbcopy"]
+    if platform == "win32" and which("clip"):
+        return ["clip"]
+    if which("wl-copy"):
+        return ["wl-copy"]
+    if which("xclip"):
+        return ["xclip", "-selection", "clipboard"]
+    return None
+
+
 def copy_to_clipboard(text: str) -> bool:
-    tool = shutil.which("pbcopy") or shutil.which("wl-copy") or shutil.which("xclip")
-    if not tool:
+    cmd = clipboard_command(sys.platform)
+    if not cmd:
         return False
-    cmd = [tool] + (["-selection", "clipboard"] if tool.endswith("xclip") else [])
     try:
         subprocess.run(cmd, input=text.encode(), check=True)
         return True
@@ -47,13 +59,22 @@ def copy_to_clipboard(text: str) -> bool:
         return False
 
 
-def open_in_editor(path: str | Path) -> None:
-    """$VISUAL/$EDITOR if set (blocking, e.g. vim), otherwise the macOS default text editor."""
-    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
-    p = str(Path(path).expanduser())
+def editor_command(path: str, *, platform: str, env: dict, which=shutil.which) -> list[str] | None:
+    """$VISUAL/$EDITOR (blocking, e.g. vim), else the OS text editor: open -t, notepad."""
+    editor = env.get("VISUAL") or env.get("EDITOR")
     if editor:
-        subprocess.run(shlex.split(editor) + [p])
-    elif shutil.which("open"):
-        subprocess.run(["open", "-t", p])
+        return shlex.split(editor, posix=platform != "win32") + [path]
+    if platform == "darwin" and which("open"):
+        return ["open", "-t", path]
+    if platform == "win32" and which("notepad"):
+        return ["notepad", path]
+    return None
+
+
+def open_in_editor(path: str | Path) -> None:
+    p = str(Path(path).expanduser())
+    cmd = editor_command(p, platform=sys.platform, env=dict(os.environ))
+    if cmd:
+        subprocess.run(cmd)
     else:
         print(f"   Відкрийте файл вручну: {p}")

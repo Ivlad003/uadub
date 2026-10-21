@@ -2288,3 +2288,20 @@ def test_ollama_errors_name_the_fix(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", not_found)
     with pytest.raises(RuntimeError, match="ollama pull gemma3:12b"):  # Review Focus 2
         OllamaLLM("gemma3:12b").chat("s", "u")
+
+
+def test_clipboard_and_editor_commands_per_platform():
+    from uadub.term import clipboard_command, editor_command
+
+    have = {"pbcopy", "clip", "wl-copy", "xclip", "notepad", "open"}
+    which = lambda name: name if name in have else None  # noqa: E731
+    assert clipboard_command("darwin", which) == ["pbcopy"]
+    assert clipboard_command("win32", which) == ["clip"]
+    assert clipboard_command("linux", which) == ["wl-copy"]
+    assert clipboard_command("linux", lambda n: n if n == "xclip" else None) == ["xclip", "-selection", "clipboard"]
+    assert clipboard_command("linux", lambda n: None) is None
+    p = "C:\\Відео\\my clip.uadub\\review.md"
+    assert editor_command(p, platform="win32", env={}, which=which) == ["notepad", p]
+    assert editor_command(p, platform="darwin", env={}, which=which) == ["open", "-t", p]
+    assert editor_command(p, platform="linux", env={"EDITOR": "code --wait"}, which=which) == ["code", "--wait", p]
+    assert editor_command(p, platform="linux", env={}, which=lambda n: None) is None

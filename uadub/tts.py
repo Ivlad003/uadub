@@ -34,7 +34,7 @@ class UkrTTSEngine:
         cache = CACHE_DIR / "ukrainian-tts"
         cache.mkdir(parents=True, exist_ok=True)
         cwd = os.getcwd()
-        os.chdir(cache)  # the ESPnet config refers to feats_stats.npz by relative path
+        os.chdir(str(cache))  # the ESPnet config refers to feats_stats.npz by relative path; process-local (own subprocess)
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 self.tts = TTS(cache_folder=".", device=dev)
