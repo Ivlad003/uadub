@@ -28,13 +28,16 @@ class UkrTTSEngine:
 
         from .device import pick
 
+        dev = pick(device)
+        # ESPnet ukrainian-tts ran on CPU on the Mac before the port and MPS is unverified; CUDA is used as is
+        dev = "cpu" if dev == "mps" else dev
         cache = CACHE_DIR / "ukrainian-tts"
         cache.mkdir(parents=True, exist_ok=True)
         cwd = os.getcwd()
         os.chdir(cache)  # the ESPnet config refers to feats_stats.npz by relative path
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                self.tts = TTS(cache_folder=".", device=pick(device))
+                self.tts = TTS(cache_folder=".", device=dev)
         finally:
             os.chdir(cwd)
         self.voice = voice

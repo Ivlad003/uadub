@@ -2225,3 +2225,30 @@ def test_st2_engine_resolves_device_through_pick_once(monkeypatch):
 
     tts.St2Engine(device="mps")
     assert seen == ["mps"] and used["device"] == "cpu"
+
+
+def test_ukrtts_engine_keeps_cpu_on_apple_silicon(monkeypatch, tmp_path):
+    import sys
+    import types
+
+    import uadub.device
+    from uadub import tts
+
+    got = {}
+
+    class FakeTTS:
+        def __init__(self, cache_folder, device):
+            got["device"] = device
+
+    fake_tts = types.ModuleType("ukrainian_tts.tts")
+    fake_tts.TTS = FakeTTS
+    fake_pkg = types.ModuleType("ukrainian_tts")
+    fake_pkg.tts = fake_tts
+    monkeypatch.setitem(sys.modules, "ukrainian_tts", fake_pkg)
+    monkeypatch.setitem(sys.modules, "ukrainian_tts.tts", fake_tts)
+    monkeypatch.setattr(tts, "CACHE_DIR", tmp_path)
+
+    for picked, expected in (("mps", "cpu"), ("cuda", "cuda"), ("cpu", "cpu")):
+        monkeypatch.setattr(uadub.device, "pick", lambda prefer=None, p=picked: p)
+        tts.UkrTTSEngine("dmytro")
+        assert got["device"] == expected
