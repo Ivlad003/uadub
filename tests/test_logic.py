@@ -2150,3 +2150,24 @@ def test_device_choice_prefers_cuda_then_mps_then_cpu():
     import pytest
     with pytest.raises(ValueError):
         choose("tpu", cuda=False, mps=False)
+
+
+def test_onnx_model_dir_is_reused_offline_and_download_errors_name_prefetch(monkeypatch, tmp_path):
+    import huggingface_hub
+    import pytest
+
+    from uadub import asr
+
+    def no_hub(*a, **k):
+        raise AssertionError("the Hub must not be touched")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", no_hub)
+    folder = tmp_path / asr.ONNX_PARAKEET
+    folder.mkdir()
+    for f in asr.ONNX_FILES:
+        (folder / f).write_bytes(b"x")
+    assert asr._onnx_model_dir(asr.ONNX_PARAKEET, tmp_path) == str(folder)
+
+    (folder / "vocab.txt").unlink()  # something missing → download, whose failure is explained
+    with pytest.raises(RuntimeError, match="--prefetch"):
+        asr._onnx_model_dir(asr.ONNX_PARAKEET, tmp_path)

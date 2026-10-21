@@ -135,18 +135,30 @@ def tokens_to_sentences(tokens: list[str], timestamps: list[float], *, tail: flo
     return words_to_sentences(merge_tokens_to_words(toks))
 
 
-def _onnx_model_dir(model: str) -> str:
-    """A real (symlink-free) folder with the model. onnxruntime refuses external weights that are
-    symlinks out of the model folder, which is what the Hugging Face cache consists of."""
-    from huggingface_hub import snapshot_download
-    from onnx_asr.resolver import model_repos
+ONNX_FILES = ("config.json", "vocab.txt", "encoder-model.onnx", "encoder-model.onnx.data", "decoder_joint-model.onnx")
 
+
+def _onnx_model_dir(model: str, cache: Path | None = None) -> str | None:
+    """A real (symlink-free) folder with the model, or None to let onnx-asr resolve it itself.
+    onnxruntime 1.30 refuses symlinked external data, which is what the Hugging Face cache consists
+    of. A folder that already has all the files is used without touching the Hub (offline runs)."""
+    try:
+        from onnx_asr.resolver import model_repos
+    except ImportError:  # private module moved: fall back to onnx-asr's own resolving
+        return None
     repo = model_repos.get(model)
     if repo is None:
-        return model  # a local path or an unknown name: let onnx-asr deal with it
-    target = Path.home() / ".cache" / "uadub" / "onnx" / model
-    return snapshot_download(repo, local_dir=str(target), allow_patterns=[
-        "config.json", "vocab.txt", "encoder-model.onnx", "encoder-model.onnx.data", "decoder_joint-model.onnx"])
+        return None
+    target = (cache or Path.home() / ".cache" / "uadub" / "onnx") / model
+    if all((target / f).is_file() for f in ONNX_FILES):
+        return str(target)
+    try:
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(repo, local_dir=str(target), allow_patterns=list(ONNX_FILES))
+    except Exception as e:
+        raise RuntimeError(f"Не вдалося завантажити модель розпізнавання «{model}» ({type(e).__name__}). "
+                           f"Завантажте її наперед (потрібен інтернет): uadub --prefetch") from e
 
 
 def _onnx_sentences(wav: Path, lang: str | None, model: str, device: str | None) -> list[dict]:
@@ -162,7 +174,12 @@ def _onnx_sentences(wav: Path, lang: str | None, model: str, device: str | None)
     m = onnx_asr.load_model(model, _onnx_model_dir(model), providers=ort_providers(pick(device))).with_timestamps()
     # Parakeet v3 detects the language itself; only a non-English hint is passed on.
     kwargs = {"language": lang} if lang and lang != "en" else {}
-    r = m.recognize(waveform, sample_rate=sr, **kwargs)
+    try:
+        r = m.recognize(waveform, sample_rate=sr, **kwargs)
+    except TypeError:
+        if not kwargs:
+            raise
+        r = m.recognize(waveform, sample_rate=sr)  # this onnx-asr build takes no language hint
     return tokens_to_sentences(list(r.tokens or []), list(r.timestamps or []))
 
 
