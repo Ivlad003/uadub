@@ -17,6 +17,7 @@ uadub lecture.mp4 --voice st          # → lecture.uk.mp4 + lecture.uk.srt
 - [Choosing a voice](#choosing-a-voice)
 - [Reviewing the script before voicing (`--review`)](#reviewing-the-script-before-voicing---review)
 - [Translation quality](#translation-quality)
+- [Only the text or only the audio (`--only`)](#only-the-text-or-only-the-audio---only)
 - [Word stress](#word-stress)
 - [Korean, other languages and subtitles](#korean-other-languages-and-subtitles)
 - [All options](#all-options)
@@ -296,6 +297,27 @@ uadub video.mp4 --voice st --llm ollama:qwen3:30b    # local Ollama server, stil
 - It combines with `--review-with`: for example, translate with `--llm claude:sonnet` and review
   with `--review-with opencode:<model>`.
 
+## Only the text or only the audio (`--only`)
+
+Not every video needs a dubbed video back. `--only` stops at the deliverable you want; everything
+else (voices, `--review`, `--llm`, `--from`, long videos) works as usual.
+
+```bash
+uadub talk.mp4 --only transcript                # talk.en.srt + talk.en.txt: the proofread original
+uadub talk.mp4 --only translation --review      # talk.uk.srt + talk.uk.txt + talk.en-uk.txt
+uadub talk.mp4 --only audio --voice st          # talk.uk.m4a: the dub as an audio file
+```
+
+- `transcript`: the recognition is proofread by the LLM in the original language: misheard words
+  and names (the brief's recognition fixes and glossary guide it), punctuation and sentence
+  boundaries. Nothing is paraphrased or shortened, and the timing stays; the raw line is kept in
+  `units.json` as `text_raw`. No translation is made.
+- `translation`: the usual translation, written as subtitles and text. With `--review` the pause
+  comes right after the translation, and your edits land in the files. A later full run reuses
+  this translation.
+- `audio`: the complete dub as `<name>.uk.m4a` (Ukrainian voice over the background, the original
+  as a second track, subtitles inside) plus `<name>.uk.srt`. The video stream is left out.
+
 ## Word stress
 
 - **StyleTTS2 (`--voice st…`)** stresses every word from the
@@ -356,6 +378,7 @@ Ukrainian subtitles can simply be voiced with `--subs drama.uk.srt --subs-lang u
 | `--max-speed X` | maximum speed-up of a line (1.25); st/omni lines are re-stretched in the mix by at most 1.15 |
 | `--duck DB` | background level while the voice speaks (−4 dB; −13 dB with `--no-separate`) |
 | `--text` | also save the original transcript and the translation as `.txt` files next to the video (`<name>.en.txt`, `<name>.uk.txt`, side by side in `<name>.en-uk.txt`, with every stress marked in `<name>.uk.stress.txt`); links are printed at the end |
+| `--only transcript\|translation\|audio` | only part of the job: the proofread original as `.srt` + `.txt`, the translation as `.srt` + `.txt`, or the dub as `<name>.uk.m4a` without video (see [Only the text or only the audio](#only-the-text-or-only-the-audio---only)) |
 | `--drop-original` | do not keep the original audio track |
 | `--llm M` | translation model: another MLX model, `ollama:<model>`, or an agent `claude[:model]`, `opencode[:provider/model]`, `codex[:model]`, `gemini[:model]` (not offline); default from `UADUB_LLM` |
 | `--redo STAGE`, `--stop-after STAGE` | force a stage again / stop after it |

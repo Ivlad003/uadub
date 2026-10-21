@@ -654,6 +654,37 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
   sources get the right track language; podcasts with cover art come out as `.m4a`. One re-translation
   of existing work folders.
 
+### ADR-037: Text and audio deliverables (`--only`)
+- **Context:** The user wants, for friends and the community, three things that are not a dubbed
+  video: a corrected transcript of the original, the translation as text, and the dub as an audio
+  file. `--stop-after translate --text` got close for the translation, but there was no proofread
+  transcript (the brief's `asr_fixes` only guided the translator) and no audio-only output.
+- **Decision:**
+  - One flag, `--only transcript|translation|audio` (`Options.only`), combinable with every other
+    option. `cli.default_output` gives `.m4a` for `audio`; text modes never write the video path but
+    place their files next to it.
+  - `transcript`: the translate stage runs in proofread mode. The brief is built as usual (summary,
+    glossary, `asr_fixes`; the shared brief in part mode), then `translate.proofread_units` sends
+    the lines in chunks of 20 with three neighbouring lines of context to `PROOFREAD_SYSTEM` in the
+    source language: fix misheard words and names, punctuation, sentence boundaries and noise
+    fillers; never paraphrase, shorten, merge or split. Replies go through `_ask` and
+    `_reply_items`; a correction that is empty or outside 0.5–1.5× the raw word count is rejected.
+    The raw line is kept as `text_raw`. The stage writes `units.json`, `brief.json`
+    (with `proofread`, the count) and `<src>.srt`, no `uk.srt`. `only=transcript` enters the
+    translate fingerprint; the other modes do not, so `translation` and a later full run share one
+    translation.
+  - `translation`: the pipeline stops after translate. `--review` / `--review-with` run at that
+    point (`cli._review_step`, shared with the tts-time review) and the edits land in the files.
+  - `audio`: `audio.mux(audio_only=True)` leaves the video stream out; previews and the final
+    assembly of a long video do the same.
+  - Deliverables are written by `texts.write_texts(only=…)`: `<name>.<src>.txt` + `<name>.<src>.srt`
+    for `transcript`; `<name>.uk.srt`, `<name>.uk.txt`, `<name>.<src>.txt`, `<name>.<src>-uk.txt`
+    for `translation` (no stress file: that one is for voicing); `<name>.uk.m4a` + `<name>.uk.srt`
+    for `audio`. Long videos: `parts.assemble_texts` merges the parts' lines into the master folder
+    without concatenating audio.
+- **Consequences:** One command per deliverable, the same cache and review loop. The proofread
+  costs one LLM pass over the transcript (about a third of a translation).
+
 ---
 
 ## 5. Rejected or deferred alternatives
@@ -701,6 +732,7 @@ Tools: `tests/roundtrip.py` (intelligibility), `tests/pace.py` (syl/s), and samp
 | `--llm M` | MLX model, `ollama:<m>`, or `claude|opencode|codex|gemini[:model]` (env `UADUB_LLM`) |
 | `--review`, `--review-with H[:M]`, `--redo review` | human pause / agent review (env `UADUB_REVIEW_WITH`) |
 | `--text` | `.txt` transcript, translation, stressed text, bilingual |
+| `--only transcript\|translation\|audio` | only the proofread original, only the translation (text) or only the dub as `.m4a` (ADR-037) |
 | `--stress auto|dict|off`, `--stress-dict F`, `--stress-lookup W…` | stress control and dictionary lookup |
 | `--glossary F`, `--gender m/f` | terminology, grammar gender |
 | `--domain [FIELD]` | specialist translation for the detected or given field (ADR-026) |

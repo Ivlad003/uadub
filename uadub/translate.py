@@ -654,6 +654,65 @@ def find_suspects(u: dict, known, keep: set[str]) -> list[str]:
     return sorted(set(out))
 
 
+PROOFREAD_SYSTEM = """You proofread an automatic speech-recognition transcript in {src_name}. The lines are the timed subtitles of a video: return one line per input id, never merge, split, reorder, add or drop lines.
+Fix only what recognition got wrong: misheard words and names (use the context and the hints below), capitalisation, punctuation and sentence boundaries, and noise fillers ("uh", "um"). Keep the speaker's wording, register and every fact; do not paraphrase, shorten, translate or polish the style. Return a line you cannot improve unchanged.
+{hints}
+Return ONLY JSON: {"lines": [{"id": <int>, "text": "<corrected line>"}]}"""
+
+PROOFREAD_RATIO = (0.5, 1.5)  # a "correction" outside this share of the original word count is a rewrite: rejected
+
+
+def _proofread_hints(brief: dict) -> str:
+    out = []
+    if str(brief.get("summary") or "").strip():
+        out.append(f"What the video is about: {str(brief['summary']).strip()}")
+    fixes = [f for f in (brief.get("asr_fixes") or []) if isinstance(f, dict) and f.get("heard") and f.get("meant")]
+    if fixes:
+        out.append("Known recognition errors:\n" + "\n".join(f'- "{f["heard"]}" means "{f["meant"]}"' for f in fixes))
+    names = [str(g.get("src") or g.get("en") or "").strip() for g in (brief.get("glossary") or []) if isinstance(g, dict)]
+    names = [n for n in names if n]
+    if names:
+        out.append("Names and terms that occur in the video (spell them this way): " + ", ".join(names))
+    return "\n".join(out)
+
+
+def proofread_units(llm: LLM, units: list[dict], *, src_name: str, brief: dict, log=print) -> int:
+    """--only transcript: fix recognition errors, punctuation and sentence boundaries in `text`,
+    one line per id, keeping the raw line in `text_raw`. Returns the number of lines changed."""
+    system = PROOFREAD_SYSTEM.replace("{src_name}", src_name).replace("{hints}", _proofread_hints(brief))
+    by_id = {u["id"]: u for u in units}
+    changed = 0
+    for i in range(0, len(units), CHUNK):
+        chunk = units[i : i + CHUNK]
+        log(f"   • вичитка {i // CHUNK + 1}/{(len(units) + CHUNK - 1) // CHUNK}")
+        payload = {"previous": [u["text"] for u in units[max(0, i - 3) : i]],
+                   "lines": [{"id": u["id"], "text": u["text"]} for u in chunk],
+                   "next": [u["text"] for u in units[i + CHUNK : i + CHUNK + 3]]}
+        try:
+            data = _ask(llm, system, json.dumps(payload, ensure_ascii=False), max_tokens=200 + 120 * len(chunk))
+        except RuntimeError as e:
+            log(f"   ! вичитка не вдалася, лишаю як розпізнано: {e}")
+            continue
+        ids = {u["id"] for u in chunk}
+        for item in _reply_items(data):
+            try:
+                uid = int(item.get("id"))
+            except (TypeError, ValueError):
+                continue
+            text = str(item.get("text") or "").strip() if isinstance(item.get("text"), str) else ""
+            if uid not in ids or not text:
+                continue
+            u = by_id[uid]
+            raw = u.get("text_raw") or u["text"]
+            ratio = len(text.split()) / max(1, len(raw.split()))
+            if text == u["text"] or not PROOFREAD_RATIO[0] <= ratio <= PROOFREAD_RATIO[1]:
+                continue
+            u.setdefault("text_raw", u["text"])
+            u["text"] = text
+            changed += 1
+    return changed
+
+
 def spell_latin(llm: LLM, units: list[dict], *, log=print) -> int:
     """Ask for a Cyrillic "tts" spelling of lines that still have Latin letters and none yet;
     the letter-by-letter fallback would read «Use this model» as «асе тіс модел»."""

@@ -377,13 +377,14 @@ def video_bitrate(info: dict) -> int | None:
 
 
 def mux(video: Path, audio_wav: Path, out: Path, *, srt: Path | None, keep_original: bool,
-        clip: tuple[float, float] | None = None, lang: str = "en") -> None:
+        clip: tuple[float, float] | None = None, lang: str = "en", audio_only: bool = False) -> None:
     """clip=(start, length): only that range of `video` (a part preview); the video is re-encoded so it
-    starts exactly at `start` rather than at the previous keyframe. lang: the original track's language."""
+    starts exactly at `start` rather than at the previous keyframe. lang: the original track's language.
+    audio_only: leave the video stream out (--only audio → .m4a)."""
     from .config import LANG_TAGS, LANGS
 
     info = probe(video)
-    has_video, has_audio = bool(streams(info, "video")), bool(streams(info, "audio"))
+    has_video, has_audio = bool(streams(info, "video")) and not audio_only, bool(streams(info, "audio"))
     if srt and srt.stat().st_size == 0:  # a part with no speech — ffmpeg can't open an empty .srt
         srt = None
     sub_codec = "mov_text" if out.suffix.lower() in {".mp4", ".m4v", ".mov", ".m4a"} else "srt"

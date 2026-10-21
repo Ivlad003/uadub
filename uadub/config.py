@@ -115,6 +115,7 @@ class Options:
     subs_lang: str | None = None  # language of those subtitles (default: source_lang; "uk" = no translation)
     emotion: float = 0.0  # StyleTTS2: share (0–1) of the original line's intonation in the chosen voice
     domain: str | None = None  # None: plain Ukrainian; "auto" or a field name: specialist jargon of that field
+    only: str | None = None  # None: the dubbed video; "transcript" | "translation" (texts only) | "audio" (.m4a)
     part_minutes: float | None = None  # long videos: None = automatic, 0 = never split, N = parts of ~N min
     keep_parts: bool = False  # keep the part previews after the final assembly
     clip_start: float | None = None  # this run is one part of a long video: its range in the input (s)
@@ -210,6 +211,8 @@ class Options:
             fp["speaker_gender"] = self.speaker_gender
             if self.domain:
                 fp["domain"] = self.domain  # only when on, so existing runs keep their cache
+            if self.only == "transcript":
+                fp["only"] = "transcript"  # the stage proofreads instead of translating (ADR-037)
         if self.clip_start is not None and stage in ("extract", "mix", "mux"):
             fp["clip"] = [self.clip_start, self.clip_end]
         if stage == "translate" and self.shared_brief:

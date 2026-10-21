@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 PARAGRAPH_GAP = 2.0  # seconds of silence that start a new paragraph
@@ -42,19 +43,38 @@ def render_bilingual(units: list[dict], src_label: str) -> str:
     return "\n\n".join(out) + "\n"
 
 
-def write_texts(work: Path, input_path: str, output_path: str, src_lang: str) -> list[tuple[str, Path]]:
+def write_texts(work: Path, input_path: str, output_path: str, src_lang: str,
+                only: str | None = None) -> list[tuple[str, Path]]:
     """Write <name>.<src>.txt, <name>.uk.txt and <name>.<src>-uk.txt next to the output video.
 
+    only="transcript": the proofread original as .txt and .srt, nothing else; only="translation":
+    the texts plus <name>.uk.srt, without the stress file (that one is for voicing).
     Returns (label, path) pairs for the final summary; nothing if there is no translation yet.
     """
     f = Path(work) / "units.json"
     if not f.exists():
         return []
     units = json.loads(f.read_text())
-    if not units or not any(u.get("uk") for u in units):
-        return []
     base = Path(output_path).parent / Path(input_path).stem
     files: list[tuple[str, Path]] = []
+    if only == "transcript":
+        if not units:
+            return []
+        p = base.with_name(f"{base.name}.{src_lang}.txt")
+        p.write_text(render(units, "text"), encoding="utf-8")
+        files.append(("Транскрипція", p))
+        srt = Path(work) / f"{src_lang}.srt"
+        if srt.exists():
+            p = base.with_name(f"{base.name}.{src_lang}.srt")
+            shutil.copyfile(srt, p)
+            files.append(("Субтитри оригіналу", p))
+        return files
+    if not units or not any(u.get("uk") for u in units):
+        return []
+    if only == "translation" and (Path(work) / "uk.srt").exists():
+        p = base.with_name(f"{base.name}.uk.srt")
+        shutil.copyfile(Path(work) / "uk.srt", p)
+        files.append(("Субтитри", p))
     if src_lang != "uk":
         p = base.with_name(f"{base.name}.{src_lang}.txt")
         p.write_text(render(units, "text"), encoding="utf-8")
@@ -62,7 +82,7 @@ def write_texts(work: Path, input_path: str, output_path: str, src_lang: str) ->
     p = base.with_name(f"{base.name}.uk.txt")
     p.write_text(render(units, "uk"), encoding="utf-8")
     files.append(("Переклад (текст)", p))
-    stressed = _stressed_text(Path(work), units)
+    stressed = None if only == "translation" else _stressed_text(Path(work), units)
     if stressed:
         p = base.with_name(f"{base.name}.uk.stress.txt")
         p.write_text(stressed, encoding="utf-8")

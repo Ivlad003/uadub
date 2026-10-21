@@ -208,20 +208,16 @@ def run_pipeline(opt: Options, *, redo: str | None = None, stop_after: str | Non
                      else f"Розпізнаю {LANGS.get(opt.source_lang, (opt.source_lang,))[0]} мову")
     if opt.text_lang == "uk":
         titles["translate"] = "Готую український текст (субтитри вже українською)"
+    if opt.only == "transcript":
+        titles["translate"] = f"Вичитую транскрипцію ({opt.llm.partition(':')[0] if opt.llm.count(':') else 'локальна LLM'})"
+    if opt.only == "audio":
+        titles["mux"] = "Збираю аудіо"
     for i, stage in enumerate(STAGES, 1):
         fp = opt.fingerprint(stage)
         if stage == "tts" and state.get("translate"):
-            from .review import REVIEW, import_review, review_hash
+            from .review import review_hash
 
-            if review or review_with:
-                _review_pause(opt, state, state_path, review, review_with, force_agent=redo == "review")
-            if (w / REVIEW).exists():
-                if state.get("review_export") == state.get("translate"):
-                    n = import_review(w)
-                    if n:
-                        print(f"   • застосовано правки з {REVIEW}: {n} реплік", flush=True)
-                else:
-                    print(f"   • {REVIEW} застарів (переклад змінився) — не застосовую", flush=True)
+            _review_step(opt, state, state_path, review, review_with, redo)
             fp = opt.fingerprint(stage)  # again: the review may have added words to stress.txt
             fp["review"] = review_hash(w)
         if redo == stage:
@@ -229,7 +225,8 @@ def run_pipeline(opt: Options, *, redo: str | None = None, stop_after: str | Non
         if not dirty and state.get(stage) == fp:
             print(f"{prefix}[{i}/{len(STAGES)}] {titles[stage]} — вже готово, пропускаю", flush=True)
             if stage == stop_after:
-                break
+                _after_stop(opt, state, state_path, stage, review, review_with, redo, text, summary, t_all)
+                return
             continue
         dirty = True
         for s in STAGES[STAGES.index(stage):]:
@@ -245,36 +242,81 @@ def run_pipeline(opt: Options, *, redo: str | None = None, stop_after: str | Non
         state[stage] = fp
         state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2))
         if stage == stop_after:
-            if summary:
-                print(f"\nЗупинено після етапу «{stage}». Для зручного редагування перекладу "
-                      f"запустіть з --review.")
-                _print_texts(opt, text)
+            _after_stop(opt, state, state_path, stage, review, review_with, redo, text, summary, t_all)
             return
     if not summary:
         return
     from .term import link
 
     print(f"\nГотово за {(time.time() - t_all) / 60:.1f} хв:\n"
-          f"   Відео:          {link(opt.output)}\n"
+          f"   {'Аудіо:' if opt.only == 'audio' else 'Відео:':<16}{link(opt.output)}\n"
           f"   Субтитри:       {link(Path(opt.output).with_suffix('.srt'))}\n"
           f"   Робоча папка:   {link(w)}")
     _print_texts(opt, text)
 
 
+TEXT_MODES = ("transcript", "translation")  # --only values whose deliverable is text
+
+
+def _review_step(opt: Options, state: dict, state_path: Path, review: bool, review_with: str | None,
+                 redo: str | None) -> None:
+    """The review pause (--review / --review-with) and the import of review.md edits into units.json."""
+    from .review import REVIEW, import_review
+
+    w = opt.work
+    if review or review_with:
+        _review_pause(opt, state, state_path, review, review_with, force_agent=redo == "review")
+    if (w / REVIEW).exists():
+        if state.get("review_export") == state.get("translate"):
+            n = import_review(w)
+            if n:
+                print(f"   • застосовано правки з {REVIEW}: {n} реплік", flush=True)
+        else:
+            print(f"   • {REVIEW} застарів (переклад змінився) — не застосовую", flush=True)
+
+
+def _after_stop(opt: Options, state: dict, state_path: Path, stage: str, review: bool, review_with: str | None,
+                redo: str | None, text: bool, summary: bool, t_all: float) -> None:
+    """--stop-after / --only transcript|translation: the review of a text deliverable and the summary."""
+    if stage == "translate" and opt.only == "translation" and state.get("translate"):
+        _review_step(opt, state, state_path, review, review_with, redo)
+    if not summary:
+        return
+    from .term import link
+
+    if opt.only in TEXT_MODES:
+        print(f"\nГотово за {(time.time() - t_all) / 60:.1f} хв:")
+        _print_texts(opt, True)
+        print(f"   Робоча папка:   {link(opt.work)}")
+        return
+    print(f"\nЗупинено після етапу «{stage}». Для зручного редагування перекладу запустіть з --review.")
+    _print_texts(opt, text)
+
+
 def _print_texts(opt: Options, enabled: bool) -> None:
-    """--text: the transcript and the translation as plain .txt files, with links."""
+    """--text (and the text modes of --only): the transcript and the translation as files, with links."""
     if not enabled:
         return
     from .term import link
     from .texts import write_texts
 
-    files = write_texts(opt.work, opt.input, opt.output, opt.text_lang)
+    files = write_texts(opt.work, opt.input, opt.output, opt.text_lang, only=opt.only)
     if not files:
         print("   (тексти з'являться після етапу перекладу)")
         return
-    print("   Тексти:")
+    print("   Файли:" if opt.only in TEXT_MODES else "   Тексти:")
     for label, path in files:
-        print(f"     {label + ':':<19}{link(path)}")
+        print(f"     {label + ':':<21}{link(path)}")
+
+
+def default_output(inp: Path, *, has_video: bool, only: str | None) -> Path:
+    """<name>.uk.<ext> next to the input: the input's container for a video, .m4a for audio-only
+    input and for --only audio. Text modes never write it, but texts are placed next to it."""
+    if only == "audio" or not has_video:
+        ext = ".m4a"
+    else:
+        ext = inp.suffix.lower() if inp.suffix.lower() in {".mp4", ".mov", ".m4v", ".mkv"} else ".mkv"
+    return inp.with_name(f"{inp.stem}.uk{ext}")
 
 
 def _hf_cached(repo: str, cache: Path | None = None) -> bool:
@@ -394,6 +436,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--text", action="store_true",
                    help="зберегти транскрипцію оригіналу й переклад окремими .txt поруч із відео "
                         "(<назва>.en.txt, <назва>.uk.txt, <назва>.en-uk.txt, наголоси — <назва>.uk.stress.txt) і показати посилання")
+    p.add_argument("--only", choices=["transcript", "translation", "audio"], metavar="ЩО",
+                   help="лише частина роботи: transcript — вичитана LLM транскрипція оригіналу (<назва>.<мова>.srt і .txt), "
+                        "translation — переклад текстом (<назва>.uk.srt, .uk.txt, двомовний .txt), "
+                        "audio — дубляж як аудіофайл <назва>.uk.m4a без відео")
     p.add_argument("--drop-original", action="store_true", help="не додавати оригінальну звукову доріжку")
     p.add_argument("--max-speed", type=float, default=1.25, help="максимальне прискорення мовлення (1.25)")
     p.add_argument("--pace", type=float, default=5.6, help="темп дубляжу, складів за секунду, однаковий для всіх реплік (5.6)")
@@ -497,9 +543,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.output:
         out = Path(args.output).expanduser().resolve()
     else:
-        has_video = A.has_stream(inp, "video")
-        ext = inp.suffix.lower() if inp.suffix.lower() in {".mp4", ".mov", ".m4v", ".mkv"} else (".mkv" if has_video else ".m4a")
-        out = inp.with_name(f"{inp.stem}.uk{ext}")
+        out = default_output(inp, has_video=A.has_stream(inp, "video"), only=args.only)
     work = Path(args.workdir).expanduser().resolve() if args.workdir else inp.with_name(f"{inp.stem}.uadub")
 
     opt = Options(
@@ -517,7 +561,7 @@ def main(argv: list[str] | None = None) -> None:
         stress_dict=str(Path(args.stress_dict).expanduser().resolve()) if args.stress_dict else None,
         emotion=min(max(args.emotion or 0.0, 0.0), 1.0),
         domain=(args.domain or "").strip() or None,
-        part_minutes=args.part_minutes, keep_parts=args.keep_parts,
+        part_minutes=args.part_minutes, keep_parts=args.keep_parts, only=args.only,
     )
     if opt.emotion and opt.engine != "st":
         print("Увага: --emotion працює лише з голосами StyleTTS2 (st, st:<ім'я>, duo:st)"
@@ -539,7 +583,10 @@ def main(argv: list[str] | None = None) -> None:
     extra = f", інтонація оригіналу {opt.emotion:g}" if opt.emotion else ""
     if opt.domain:
         extra += ", фаховий переклад" + ("" if opt.domain == "auto" else f" ({opt.domain})")
-    print(f"uadub: {inp.name} → {out.name}  (голос: {voice}{extra}, LLM: {opt.llm})\n", flush=True)
+    what = {"transcript": "лише транскрипція", "translation": "лише переклад", "audio": "лише аудіо"}.get(opt.only or "", "")
+    print(f"uadub: {inp.name} → {out.name if opt.only not in TEXT_MODES else what}  "
+          f"(голос: {voice}{extra}, LLM: {opt.llm}{', ' + what if what and opt.only == 'audio' else ''})\n", flush=True)
+    stop_after = args.stop_after or ("translate" if opt.only in TEXT_MODES else None)
     from .parts import choose_part_minutes, load_or_make_plan, run_long
 
     minutes = choose_part_minutes(opt, A.duration(inp))
@@ -548,10 +595,10 @@ def main(argv: list[str] | None = None) -> None:
             print("Порада: --review зупинятиметься перед озвученням кожної частини; "
                   "для довгого відео зручніше --review-with.", flush=True)
         plan = load_or_make_plan(opt.work, inp, minutes, opt.sample_rate)
-        run_long(opt, plan, redo=args.redo, stop_after=args.stop_after, review=args.review,
+        run_long(opt, plan, redo=args.redo, stop_after=stop_after, review=args.review,
                  review_with=args.review_with, text=args.text)
         return
-    run_pipeline(opt, redo=args.redo, stop_after=args.stop_after, review=args.review, review_with=args.review_with,
+    run_pipeline(opt, redo=args.redo, stop_after=stop_after, review=args.review, review_with=args.review_with,
                  text=args.text)
 
 

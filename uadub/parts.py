@@ -228,26 +228,35 @@ def merged_units(items: list[tuple[Path, float]]) -> list[dict]:
     return out
 
 
-def assemble(video: Path, items: list[tuple[Path, float]], out: Path, master: Path, *,
-             src_lang: str, keep_original: bool) -> None:
-    """One result: the parts' dub audio concatenated by ffmpeg (streamed, encoded once) over the original video."""
-    import shutil
-
+def assemble_texts(items: list[tuple[Path, float]], master: Path, src_lang: str) -> list[dict]:
+    """The parts' lines as one timeline: units.json, <src>.srt and (when translated) uk.srt in the master folder."""
     from .srt import make_cues, write_srt
 
     master = Path(master)
     master.mkdir(parents=True, exist_ok=True)
     units = merged_units(items)
     (master / "units.json").write_text(json.dumps(units, ensure_ascii=False), encoding="utf-8")
-    write_srt(make_cues(units, "uk"), master / "uk.srt")
     write_srt(make_cues(units, "text"), master / f"{src_lang}.srt")
+    if any(u.get("uk") for u in units):
+        write_srt(make_cues(units, "uk"), master / "uk.srt")
+    return units
+
+
+def assemble(video: Path, items: list[tuple[Path, float]], out: Path, master: Path, *,
+             src_lang: str, keep_original: bool, audio_only: bool = False) -> None:
+    """One result: the parts' dub audio concatenated by ffmpeg (streamed, encoded once) over the original video."""
+    import shutil
+
+    master = Path(master)
+    assemble_texts(items, master, src_lang)
     lst = master / "concat.txt"
     esc = lambda p: str(Path(p).resolve()).replace("'", "'\\''")
     lst.write_text("".join(f"file '{esc(Path(w) / 'dub.flac')}'\n" for w, _ in items), encoding="utf-8")
     whole = master / "dub_all.flac"
     try:
         A._run(["ffmpeg", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c:a", "flac", str(whole)])
-        A.mux(Path(video), whole, Path(out), srt=master / "uk.srt", keep_original=keep_original, lang=src_lang)
+        A.mux(Path(video), whole, Path(out), srt=master / "uk.srt", keep_original=keep_original, lang=src_lang,
+              audio_only=audio_only)
     finally:
         whole.unlink(missing_ok=True)
         lst.unlink(missing_ok=True)
@@ -495,6 +504,12 @@ def run_long(opt, plan: dict, *, redo: str | None = None, stop_after: str | None
                          review_with=review_with, prefix=tag, summary=False)
 
     _stop_if_failed(_each_part(opt, plan, master, make, record))
+    if opt.only in cli.TEXT_MODES:  # the deliverable is text: one timeline of all parts, no audio
+        assemble_texts([(w, p["start"]) for w, p in zip(works, plan["parts"])], master, opt.text_lang)
+        print(f"\nГотово за {(time.time() - t_all) / 60:.1f} хв:")
+        cli._print_texts(opt, True)
+        print(f"   Робоча папка:   {link(master)}")
+        return
     if stop_after:
         print(f"\nЗупинено після етапу «{stop_after}» для всіх частин.")
         return
@@ -514,13 +529,13 @@ def run_long(opt, plan: dict, *, redo: str | None = None, stop_after: str | None
     if state.get("assembled") != key or not out.exists():
         print(f"\nСклеюю {parts_word(len(works))} → {out.name}", flush=True)
         assemble(Path(opt.input), [(w, p["start"]) for w, p in zip(works, plan["parts"])], out, master,
-                 src_lang=opt.text_lang, keep_original=opt.keep_original)
+                 src_lang=opt.text_lang, keep_original=opt.keep_original, audio_only=opt.only == "audio")
         state["assembled"] = key
         save()
     if not opt.keep_parts:
         shutil.rmtree(previews_dir(opt), ignore_errors=True)
     print(f"\nГотово за {(time.time() - t_all) / 60:.1f} хв:\n"
-          f"   Відео:          {link(out)}\n"
+          f"   {'Аудіо:' if opt.only == 'audio' else 'Відео:':<16}{link(out)}\n"
           f"   Субтитри:       {link(out.with_suffix('.srt'))}\n"
           f"   Робоча папка:   {link(master)}")
     cli._print_texts(opt, text)

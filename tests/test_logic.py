@@ -1781,3 +1781,267 @@ def test_anglicism_pass_rejects_rewrites_that_lose_facts_or_balloon():
     units = unit()
     assert fix_anglicisms(llm("Натисніть «Save» у застосунку."), units, log=lambda *_: None) == 1
     assert units[0]["uk"] == "Натисніть «Save» у застосунку."
+
+
+# ---- --only transcript|translation|audio (ADR-037) --------------------------------------------
+
+def test_only_flag_parses_and_enters_fingerprint_only_for_transcript(tmp_path):
+    import pytest
+
+    from uadub.cli import build_parser, default_output
+    from uadub.config import Options
+
+    p = build_parser()
+    assert p.parse_args(["x.mp4"]).only is None
+    assert p.parse_args(["x.mp4", "--only", "audio"]).only == "audio"
+    with pytest.raises(SystemExit):
+        p.parse_args(["x.mp4", "--only", "video"])
+    base = dict(input="a.mp4", output="a.uk.mp4", workdir=str(tmp_path), voice="st")
+    assert "only" not in Options(**base).fingerprint("translate")
+    assert Options(only="transcript", **base).fingerprint("translate")["only"] == "transcript"
+    for mode in ("translation", "audio"):  # the same translation as a full run: the cache is shared
+        assert "only" not in Options(only=mode, **base).fingerprint("translate")
+    assert default_output(Path("/v/clip.mp4"), has_video=True, only=None) == Path("/v/clip.uk.mp4")
+    assert default_output(Path("/v/clip.mp4"), has_video=True, only="audio") == Path("/v/clip.uk.m4a")
+    assert default_output(Path("/v/pod.mp3"), has_video=False, only=None) == Path("/v/pod.uk.m4a")
+    assert default_output(Path("/v/clip.mkv"), has_video=True, only="transcript") == Path("/v/clip.uk.mkv")
+
+
+def test_proofread_units_fixes_text_and_keeps_raw_on_bad_replies():
+    import json as _json
+
+    from uadub.translate import proofread_units
+
+    seen = []
+
+    class FakeLLM:
+        def chat(self, system, user, *, max_tokens=4096, temperature=0.3):
+            seen.append((system, user))
+            ids = [l["id"] for l in _json.loads(user)["lines"]]
+            lines = [{"id": 1, "text": "I want to download Qwen 3.6."}, {"id": 99, "text": "ghost"},
+                     {"id": 3, "text": ""}, {"id": 4, "text": "a " * 40}]
+            return _json.dumps({"lines": [l for l in lines if l["id"] in ids or l["id"] == 99]})
+
+    units = [{"id": 1, "text": "i want to download quen 3.6", "start": 0.0, "end": 2.0},
+             {"id": 2, "text": "so let's go back", "start": 2.0, "end": 3.0},
+             {"id": 3, "text": "okay", "start": 3.0, "end": 3.5},
+             {"id": 4, "text": "a short one", "start": 3.5, "end": 4.0}]
+    brief = {"summary": "About LM Studio.", "asr_fixes": [{"heard": "quen", "meant": "Qwen"}],
+             "glossary": [{"src": "LM Studio", "uk": "LM Studio"}]}
+    assert proofread_units(FakeLLM(), units, src_name="English", brief=brief, log=lambda *_: None) == 1
+    assert units[0]["text"] == "I want to download Qwen 3.6." and units[0]["text_raw"] == "i want to download quen 3.6"
+    assert units[1]["text"] == "so let's go back" and "text_raw" not in units[1]  # not in the reply: raw stays
+    assert units[2]["text"] == "okay"  # empty correction rejected
+    assert units[3]["text"] == "a short one"  # a rewrite 10× the length is not a correction
+    system, user = seen[0]
+    assert "quen" in system and "Qwen" in system and "English" in system  # the brief's fixes guide the pass
+    assert "max_syl" not in user
+
+    class Broken:
+        def chat(self, system, user, *, max_tokens=4096, temperature=0.3):
+            return '{"lines": null}'
+
+    units = [{"id": 1, "text": "raw", "start": 0.0, "end": 1.0}]
+    assert proofread_units(Broken(), units, src_name="English", brief={}, log=lambda *_: None) == 0
+    assert units[0]["text"] == "raw"
+
+
+def test_write_texts_per_mode(tmp_path):
+    import json
+
+    from uadub.config import Options
+    from uadub.texts import write_texts
+
+    work = tmp_path / "w"
+    work.mkdir()
+    Options(input=str(tmp_path / "clip.mp4"), output=str(tmp_path / "clip.uk.mp4"), workdir=str(work),
+            voice="st").save(work / "options.json")
+    units = [{"id": 1, "start": 0.0, "end": 2.0, "slot_end": 2.0, "text": "Hello there.", "max_syl": 10},
+             {"id": 2, "start": 5.0, "end": 7.0, "slot_end": 7.0, "text": "Bye.", "max_syl": 10}]
+    (work / "units.json").write_text(json.dumps(units, ensure_ascii=False), encoding="utf-8")
+    (work / "en.srt").write_text("1\n00:00:00,000 --> 00:00:02,000\nHello there.\n", encoding="utf-8")
+    assert write_texts(work, str(tmp_path / "clip.mp4"), str(tmp_path / "clip.uk.mp4"), "en") == []  # no translation yet
+    files = write_texts(work, str(tmp_path / "clip.mp4"), str(tmp_path / "clip.uk.mp4"), "en", only="transcript")
+    assert [p.name for _, p in files] == ["clip.en.txt", "clip.en.srt"]
+    assert (tmp_path / "clip.en.txt").read_text(encoding="utf-8") == "[00:00] Hello there.\n\n[00:05] Bye.\n"
+    assert (tmp_path / "clip.en.srt").read_text(encoding="utf-8").startswith("1\n")
+
+    for u, uk in zip(units, ("Привіт.", "Бувай.")):
+        u["uk"] = uk
+    (work / "units.json").write_text(json.dumps(units, ensure_ascii=False), encoding="utf-8")
+    (work / "uk.srt").write_text("1\n00:00:00,000 --> 00:00:02,000\nПривіт.\n", encoding="utf-8")
+    files = write_texts(work, str(tmp_path / "clip.mp4"), str(tmp_path / "clip.uk.mp4"), "en", only="translation")
+    names = [p.name for _, p in files]
+    assert "clip.uk.srt" in names and "clip.uk.txt" in names and "clip.en-uk.txt" in names
+    assert "clip.uk.stress.txt" not in names  # stress is for voicing, not for a text deliverable
+
+
+def test_mux_audio_only_drops_the_video(tmp_path):
+    import numpy as np
+
+    from uadub import audio as A
+
+    dub = tmp_path / "dub.flac"
+    A.write_flac(dub, np.zeros((44100 * 2, 2), np.float32), 44100)
+    out = tmp_path / "v.uk.m4a"
+    A.mux(_test_video(tmp_path / "v.mp4"), dub, out, srt=None, keep_original=True, audio_only=True)
+    assert [s["codec_type"] for s in A.probe(out)["streams"]] == ["audio", "audio"]
+
+
+def _fake_translate_stage(ran: list[str], uk: bool):
+    import json
+
+    def fake_stage(stage, opt):
+        ran.append(stage)
+        if stage == "translate":
+            units = [{"id": 1, "start": 0.0, "end": 2.0, "slot_end": 2.0, "text": "Hello there.", "max_syl": 10},
+                     {"id": 2, "start": 5.0, "end": 7.0, "slot_end": 7.0, "text": "Bye.", "max_syl": 10}]
+            if uk:
+                for u, t in zip(units, ("Привіт.", "Бувай.")):
+                    u["uk"] = t
+                (opt.work / "uk.srt").write_text("1\n00:00:00,000 --> 00:00:02,000\nПривіт.\n", encoding="utf-8")
+            (opt.work / "units.json").write_text(json.dumps(units, ensure_ascii=False), encoding="utf-8")
+            (opt.work / "en.srt").write_text("1\n00:00:00,000 --> 00:00:02,000\nHello there.\n", encoding="utf-8")
+    return fake_stage
+
+
+def test_only_transcript_stops_after_translate_and_writes_texts(tmp_path, monkeypatch, capsys):
+    from uadub import cli
+    from uadub.config import Options
+
+    ran: list[str] = []
+    monkeypatch.setattr(cli, "_run_stage", _fake_translate_stage(ran, uk=False))
+    opt = Options(input=str(tmp_path / "clip.mp4"), output=str(tmp_path / "clip.uk.mp4"),
+                  workdir=str(tmp_path / "w"), voice="st", only="transcript")
+    cli.run_pipeline(opt, stop_after="translate")
+    assert ran == ["extract", "separate", "asr", "translate"]
+    assert (tmp_path / "clip.en.txt").exists() and (tmp_path / "clip.en.srt").exists()
+    out = capsys.readouterr().out
+    assert "Транскрипція" in out and "Готово" in out and "Зупинено" not in out
+
+
+def test_only_translation_pauses_for_review_then_writes_edited_texts(tmp_path, monkeypatch):
+    import pytest
+
+    from uadub import cli
+    from uadub.config import Options
+    from uadub.review import REVIEW
+
+    ran: list[str] = []
+    monkeypatch.setattr(cli, "_run_stage", _fake_translate_stage(ran, uk=True))
+    opt = Options(input=str(tmp_path / "clip.mp4"), output=str(tmp_path / "clip.uk.mp4"),
+                  workdir=str(tmp_path / "w"), voice="st", only="translation")
+    with pytest.raises(cli.UserStop):  # stdin is not a tty: review.md is exported, the run pauses
+        cli.run_pipeline(opt, stop_after="translate", review=True)
+    assert ran == ["extract", "separate", "asr", "translate"] and (opt.work / REVIEW).exists()
+    path = opt.work / REVIEW
+    path.write_text(path.read_text(encoding="utf-8").replace("UK:  Бувай.", "UK:  До зустрічі."), encoding="utf-8")
+    cli.run_pipeline(opt, stop_after="translate")
+    assert ran == ["extract", "separate", "asr", "translate"]  # nothing redone, nothing voiced
+    assert "До зустрічі." in (tmp_path / "clip.uk.srt").read_text(encoding="utf-8")
+    assert "До зустрічі." in (tmp_path / "clip.uk.txt").read_text(encoding="utf-8")
+
+
+def test_stage_translate_proofreads_in_transcript_mode(tmp_path, monkeypatch):
+    import json as _json
+
+    from uadub import llm as L
+    from uadub import stages
+    from uadub.config import Options
+
+    class FakeLLM:
+        def chat(self, system, user, *, max_tokens=4096, temperature=0.3):
+            if system.startswith("You prepare a translation brief"):
+                return _json.dumps({"summary": "About Qwen.", "asr_fixes": [{"heard": "quen", "meant": "Qwen"}]})
+            assert system.startswith("You proofread"), system[:40]
+            ids = [l["id"] for l in _json.loads(user)["lines"]]
+            return _json.dumps({"lines": [{"id": i, "text": "I want Qwen 3.6."} for i in ids]})
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(L, "make_llm", lambda spec: FakeLLM())
+    work = tmp_path / "w"
+    work.mkdir()
+    (work / "meta.json").write_text(_json.dumps({"duration": 10.0}))
+    (work / "transcript.json").write_text(_json.dumps([{"start": 0.0, "end": 2.0, "text": "i want quen 3.6"}]))
+    opt = Options(input=str(tmp_path / "clip.mp4"), output=str(tmp_path / "clip.uk.mp4"), workdir=str(work),
+                  voice="st", only="transcript")
+    stages.stage_translate(opt)
+    units = _json.loads((work / "units.json").read_text(encoding="utf-8"))
+    assert units[0]["text"] == "I want Qwen 3.6." and units[0]["text_raw"] == "i want quen 3.6"
+    assert "uk" not in units[0]
+    assert (work / "en.srt").exists() and not (work / "uk.srt").exists()
+    assert _json.loads((work / "brief.json").read_text(encoding="utf-8"))["proofread"] == 1
+
+
+def test_stage_mux_audio_only(tmp_path):
+    import numpy as np
+
+    from uadub import audio as A
+    from uadub import stages
+    from uadub.config import Options
+
+    work = tmp_path / "w"
+    work.mkdir()
+    A.write(work / "mix.wav", np.zeros((44100 * 2, 2), np.float32), 44100)
+    (work / "uk.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nПривіт.\n", encoding="utf-8")
+    out = tmp_path / "v.uk.m4a"
+    opt = Options(input=str(_test_video(tmp_path / "v.mp4")), output=str(out), workdir=str(work), voice="st",
+                  only="audio")
+    stages.stage_mux(opt)
+    kinds = [s["codec_type"] for s in A.probe(out)["streams"]]
+    assert kinds == ["audio", "audio", "subtitle"] and (tmp_path / "v.uk.srt").exists()
+
+
+def test_run_long_text_mode_assembles_texts_without_audio(tmp_path, monkeypatch):
+    import json as _json
+
+    from uadub import cli, parts
+    from uadub.config import Options
+
+    opt = Options(input=str(tmp_path / "long.mp4"), output=str(tmp_path / "long.uk.mp4"),
+                  workdir=str(tmp_path / "long.uadub"), voice="st", only="transcript")
+    plan = {"duration": 20.0, "sample_rate": 44100, "part_minutes": 0.2, "parts": [
+        {"n": 1, "start": 0.0, "end": 10.0, "pause": 1.0, "fallback": False},
+        {"n": 2, "start": 10.0, "end": 20.0, "pause": None, "fallback": False}]}
+    stops = []
+
+    def fake_run(po, *, redo=None, stop_after=None, review=False, review_with=None, text=False, prefix="",
+                 summary=True):
+        n = int(po.work.name)
+        stops.append(stop_after)
+        po.work.mkdir(parents=True, exist_ok=True)
+        (po.work / "transcript.json").write_text(_json.dumps([{"start": 0, "end": 1, "text": f"part {n}"}]))
+        (po.work / "meta.json").write_text(_json.dumps({"duration": 10.0}))
+        if stop_after == "translate":
+            (po.work / "units.json").write_text(_json.dumps(
+                [{"id": 1, "start": 0.0, "end": 1.0, "slot_end": 1.0, "text": f"Part {n}.", "max_syl": 5}]))
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    monkeypatch.setattr(parts, "build_shared_brief", lambda master, works: (master / "long_brief.json").write_text("{}"))
+    monkeypatch.setattr(parts, "speech_loudness", lambda w, sr: -20.0)
+    monkeypatch.setattr(parts, "assemble", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no audio assembly")))
+    parts.run_long(opt, plan, stop_after="translate")
+    assert stops == ["asr", "asr", "translate", "translate"]
+    units = _json.loads((opt.work / "units.json").read_text(encoding="utf-8"))
+    assert [u["text"] for u in units] == ["Part 1.", "Part 2."] and units[1]["start"] == 10.0
+    assert (tmp_path / "long.en.srt").exists() and (tmp_path / "long.en.txt").exists()
+    assert not (tmp_path / "long.uk.mp4").exists()
+
+
+def test_assemble_audio_only_passes_through(tmp_path, monkeypatch):
+    from uadub import audio as A
+    from uadub import parts
+
+    seen = {}
+    monkeypatch.setattr(A, "_run", lambda cmd: Path(cmd[-1]).write_bytes(b"flac"))
+    monkeypatch.setattr(A, "mux", lambda *a, **k: seen.update(k))
+    (tmp_path / "p1").mkdir()
+    (tmp_path / "p1" / "units.json").write_text('[{"id": 1, "start": 0.0, "end": 1.0, "text": "Hi.", "uk": "Привіт."}]')
+    (tmp_path / "p1" / "dub.flac").write_bytes(b"x")
+    master = tmp_path / "m"
+    out = tmp_path / "long.uk.m4a"
+    parts.assemble(tmp_path / "long.mp4", [(tmp_path / "p1", 0.0)], out, master, src_lang="en", keep_original=True,
+                   audio_only=True)
+    assert seen["audio_only"] is True and seen["lang"] == "en"

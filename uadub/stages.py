@@ -198,6 +198,22 @@ def stage_translate(opt: Options) -> None:
     log(f"   • модель: {opt.llm}")
     llm = make_llm(opt.llm)
     try:
+        if opt.only == "transcript":  # --only transcript: proofread the original, no translation (ADR-037)
+            from .config import LANGS
+            from .translate import LANG_RULES, make_brief, proofread_units
+
+            src_name = LANGS.get(opt.text_lang, (None, opt.text_lang))[1]
+            if opt.shared_brief:
+                brief = json.loads(Path(opt.shared_brief).read_text(encoding="utf-8"))
+            else:
+                log("   • аналіз тексту (тема, імена, помилки розпізнавання)…")
+                brief = make_brief(llm, units, src_name, LANG_RULES.get(opt.text_lang, ""), opt.domain)
+            n = proofread_units(llm, units, src_name=src_name, brief=brief, log=log)
+            log(f"   • виправлено реплік: {n}")
+            save_json(w, "brief.json", {**brief, "proofread": n})
+            save_json(w, "units.json", units)
+            write_srt(make_cues(units, "text"), w / f"{opt.text_lang}.srt")
+            return
         if opt.text_lang == "uk":  # Ukrainian subtitles: nothing to translate, just voice them
             from .translate import resolve_homographs, set_budgets
 
@@ -532,7 +548,7 @@ def stage_mux(opt: Options) -> None:
     out = Path(opt.output)
     srt = w / "uk.srt"
     A.mux(Path(opt.input), w / "mix.wav", out, srt=srt if srt.exists() else None, keep_original=opt.keep_original,
-          lang=opt.source_lang)
+          lang=opt.source_lang, audio_only=opt.only == "audio")
     if srt.exists():
         shutil.copyfile(srt, out.with_suffix(".srt"))
 
@@ -548,7 +564,8 @@ def _part_output(opt: Options) -> None:
     A.write_flac(w / "dub.flac", A.fit_length(y, round(length * sr)), sr)
     out.parent.mkdir(parents=True, exist_ok=True)
     A.mux(Path(opt.input), w / "dub.flac", out, srt=srt if srt.exists() else None,
-          keep_original=opt.keep_original, clip=(opt.clip_start, length), lang=opt.source_lang)
+          keep_original=opt.keep_original, clip=(opt.clip_start, length), lang=opt.source_lang,
+          audio_only=opt.only == "audio")
     if srt.exists():
         shutil.copyfile(srt, out.with_suffix(".srt"))
     log(f"   • превʼю: {out}")
