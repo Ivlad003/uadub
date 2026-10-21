@@ -483,6 +483,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stress-lookup", nargs="+", metavar="СЛОВО",
                    help="показати наголоси слова за словником (усі варіанти з граматичними ознаками) і ваш stress.txt")
     p.add_argument("--list-voices", action="store_true", help="показати всі голоси")
+    p.add_argument("--doctor", action="store_true", help="показати, що встановлено і чого бракує (пристрій, бекенди, Ollama, ffmpeg)")
     p.add_argument("--prefetch", action="store_true", help="лише завантажити моделі (з --all — для всіх голосів)")
     p.add_argument("--all", action="store_true", help=argparse.SUPPRESS)
     return p
@@ -494,6 +495,12 @@ def main(argv: list[str] | None = None) -> None:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     args = build_parser().parse_args(argv)
+    if args.doctor:
+        from .doctor import collect, render
+
+        text, ok = render(collect(lang=args.source_lang))
+        print(text, flush=True)
+        sys.exit(0 if ok else 1)
 
     voice = args.voice.strip()
     if voice.lower() in UKR_VOICES:

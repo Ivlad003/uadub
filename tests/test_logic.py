@@ -2311,3 +2311,26 @@ def test_clipboard_and_editor_commands_per_platform():
         "--wait",
         p,
     ]
+
+
+def test_doctor_report_names_problems_and_fixes():
+    from uadub.doctor import render
+
+    good = {"platform": "linux", "machine": "x86_64", "python": "3.12.4", "uadub": "0.1.0", "torch": "2.8.0+cu128",
+            "torch_cuda": True, "onnxruntime": "1.22.0", "ort_providers": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+            "ctranslate2": "4.6.0", "mlx": False, "driver": "570.86", "vram_gb": 24.0, "asr_backend": "onnx",
+            "llm": "ollama:gemma3:27b", "ollama_up": True, "ollama_models": ["gemma3:27b"], "ffmpeg": "/usr/bin/ffmpeg",
+            "cache_dir": "/home/u/.cache/uadub", "cache_gb": 9.3}
+    text, ok = render(good)
+    assert ok and "CUDA: так" in text and "gemma3:27b" in text and "ffmpeg" in text
+    bad = dict(good, torch_cuda=False, ollama_up=False, ollama_models=[], ffmpeg=None)
+    text, ok = render(bad)
+    assert not ok
+    assert "ollama serve" in text and "ffmpeg" in text and "CUDA: ні" in text
+    missing_model = dict(good, ollama_models=["llama3:8b"])
+    text, ok = render(missing_model)
+    assert not ok and "ollama pull gemma3:27b" in text
+    mac = {"platform": "darwin", "machine": "arm64", "mlx": True, "asr_backend": "mlx",
+           "llm": "mlx-community/gemma-4-26b-a4b-it-4bit", "ffmpeg": "/opt/homebrew/bin/ffmpeg"}
+    text, ok = render(mac)
+    assert ok and "MLX" in text
