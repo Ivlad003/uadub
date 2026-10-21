@@ -2171,3 +2171,17 @@ def test_onnx_model_dir_is_reused_offline_and_download_errors_name_prefetch(monk
     (folder / "vocab.txt").unlink()  # something missing → download, whose failure is explained
     with pytest.raises(RuntimeError, match="--prefetch"):
         asr._onnx_model_dir(asr.ONNX_PARAKEET, tmp_path)
+
+
+def test_ct2_segments_become_whisper_dicts():
+    from types import SimpleNamespace as NS
+
+    from uadub.asr import ct2_segments_to_dicts, whisper_words
+
+    segs = [NS(text=" Hello there.", no_speech_prob=0.05, avg_logprob=-0.2,
+               words=[NS(word=" Hello", start=0.0, end=0.4), NS(word=" there.", start=0.5, end=0.9)]),
+            NS(text=" ...", no_speech_prob=0.95, avg_logprob=-2.0, words=None)]
+    dicts = ct2_segments_to_dicts(iter(segs))
+    assert dicts[0]["words"] == [{"word": " Hello", "start": 0.0, "end": 0.4}, {"word": " there.", "start": 0.5, "end": 0.9}]
+    assert dicts[1]["words"] == []
+    assert [w["w"] for w in whisper_words(dicts)] == ["Hello", "there."]

@@ -183,5 +183,25 @@ def _onnx_sentences(wav: Path, lang: str | None, model: str, device: str | None)
     return tokens_to_sentences(list(r.tokens or []), list(r.timestamps or []))
 
 
-def _ct2_sentences(wav: Path, lang: str, model: str, device: str | None) -> list[dict]:
-    raise NotImplementedError  # Task 4
+def ct2_segments_to_dicts(segments) -> list[dict]:
+    """faster-whisper Segment objects → the plain dicts `whisper_words` understands."""
+    out = []
+    for s in segments:
+        out.append({"text": s.text, "no_speech_prob": s.no_speech_prob, "avg_logprob": s.avg_logprob,
+                    "words": [{"word": w.word, "start": float(w.start), "end": float(w.end)} for w in (s.words or [])]})
+    return out
+
+
+def _ct2_sentences(wav: Path, lang: str | None, model: str, device: str | None) -> list[dict]:
+    _need("faster_whisper", "cpu")
+    import torch  # noqa: F401  (loads the cuDNN/cuBLAS libraries the PyTorch wheels ship; CTranslate2 reuses them)
+    from faster_whisper import WhisperModel
+
+    from .device import pick
+    from .segments import words_to_sentences
+
+    dev = "cuda" if pick(device) == "cuda" else "cpu"
+    m = WhisperModel(model, device=dev, compute_type="float16" if dev == "cuda" else "int8")
+    segments, _info = m.transcribe(str(wav), language=lang, word_timestamps=True, condition_on_previous_text=False,
+                                   no_speech_threshold=0.6, vad_filter=False)
+    return words_to_sentences(whisper_words(ct2_segments_to_dicts(segments)))
