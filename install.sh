@@ -3,8 +3,11 @@
 set -euo pipefail
 
 REPO="${UADUB_SOURCE:-git+https://github.com/Ivlad003/uadub.git}"
+STEP="старт"
 
-say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+trap 'echo; echo "Встановлення зупинилось на кроці: $STEP (команда завершилася з помилкою). Виправте причину вище і запустіть скрипт знову." >&2' ERR
+
+say() { STEP="$*"; printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 say "1/6 uv"
 if ! command -v uv >/dev/null 2>&1; then
@@ -22,6 +25,11 @@ else
   EXTRA=cpu
 fi
 
+if ! command -v git >/dev/null 2>&1; then
+  echo "Потрібен git для встановлення з репозиторію: sudo apt install git (Debian/Ubuntu) · sudo dnf install git (Fedora)"
+  exit 1
+fi
+
 say "3/6 uadub[$EXTRA]"
 uv tool install --force --python 3.12 "uadub[$EXTRA] @ $REPO"
 export PATH="$HOME/.local/bin:$PATH"
@@ -36,7 +44,17 @@ if ! command -v ollama >/dev/null 2>&1; then
   curl -fsSL https://ollama.com/install.sh | sh
 fi
 if ! curl -s http://127.0.0.1:11434/api/tags >/dev/null; then
-  (ollama serve >/tmp/ollama.log 2>&1 &) ; sleep 3
+  (ollama serve >/tmp/ollama.log 2>&1 &)
+  # Wait up to 30 s for the Ollama server to answer.
+  for _ in $(seq 30); do
+    if curl -s http://127.0.0.1:11434/api/tags >/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+  if ! curl -s http://127.0.0.1:11434/api/tags >/dev/null; then
+    echo "Ollama не піднявся за 30 с — запустіть «ollama serve» вручну і повторіть uadub --prefetch"
+  fi
 fi
 
 say "6/6 моделі"

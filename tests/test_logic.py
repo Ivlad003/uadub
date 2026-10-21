@@ -2360,7 +2360,10 @@ def test_install_scripts_exist_and_parse():
     sh, ps1 = root / "install.sh", root / "install.ps1"
     assert sh.exists() and ps1.exists()
     assert subprocess.run(["bash", "-n", str(sh)]).returncode == 0  # syntax only
-    text = ps1.read_text(encoding="utf-8")
+    assert ps1.read_bytes().startswith(b"\xef\xbb\xbf")  # UTF-8 BOM for Windows PowerShell 5.1
+    assert "trap" in sh.read_text(encoding="utf-8") and "git" in sh.read_text(encoding="utf-8")
+    text = ps1.read_text(encoding="utf-8-sig")
     assert "uv tool install" in text and "ollama" in text.lower() and "--doctor" in text
+    assert "LASTEXITCODE" in text and "Git.Git" in text
     if shutil.which("pwsh"):
         assert subprocess.run(["pwsh", "-NoProfile", "-Command", f"[void][scriptblock]::Create((Get-Content -Raw '{ps1}'))"]).returncode == 0
