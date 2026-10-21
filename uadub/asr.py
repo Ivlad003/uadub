@@ -56,7 +56,7 @@ def whisper_words(segments: list[dict]) -> list[dict]:
     return words
 
 
-def transcribe(wav: Path, *, lang: str, model: str, backend: str, total: float,
+def transcribe(wav: Path, *, lang: str | None, model: str, backend: str, total: float,
                device: str | None = None) -> list[dict]:
     """Timed sentences of `wav` (mono 16 kHz) with the chosen backend."""
     if backend == "mlx":
@@ -74,7 +74,7 @@ def transcribe_text(path: str | Path, *, backend: str, device: str | None = None
         from parakeet_mlx import from_pretrained
 
         return from_pretrained(DEFAULT_ASR).transcribe(str(path)).text.strip()
-    sentences = transcribe(Path(path), lang="en", model=default_asr_model(backend, "en"), backend=backend,
+    sentences = transcribe(Path(path), lang=None, model=default_asr_model(backend, "en"), backend=backend,
                            total=0.0, device=device)
     return " ".join(s["text"] for s in sentences).strip()
 
@@ -108,8 +108,62 @@ def _mlx_sentences(wav: Path, lang: str, model: str, total: float) -> list[dict]
     return words_to_sentences(whisper_words(r.get("segments", [])))
 
 
-def _onnx_sentences(wav: Path, lang: str, model: str, device: str | None) -> list[dict]:
-    raise NotImplementedError  # Task 3
+class MissingBackend(RuntimeError):
+    """A backend's package is not installed: the message names the extra to install."""
+
+
+def _need(module: str, extra: str) -> None:
+    if importlib.util.find_spec(module) is None:
+        raise MissingBackend(f"Не встановлено {module}. Поставте uadub з додатком: "
+                             f"uv tool install \"uadub[{extra}]\" (на машині з NVIDIA — uadub[cuda])")
+
+
+def tokens_to_sentences(tokens: list[str], timestamps: list[float], *, tail: float = 0.08) -> list[dict]:
+    """onnx-asr gives SentencePiece tokens (a leading space starts a word) and one start time per
+    token. A token ends where the next one starts; the last one gets `tail` seconds."""
+    from .segments import merge_tokens_to_words, words_to_sentences
+
+    toks = []
+    for i, (text, start) in enumerate(zip(tokens, timestamps)):
+        if not text:
+            continue
+        nxt = next((timestamps[j] for j in range(i + 1, len(timestamps)) if tokens[j]), None)
+        end = float(nxt) if nxt is not None else float(start) + tail
+        toks.append({"text": text, "start": round(float(start), 3), "end": round(end, 3)})
+    if toks and not toks[0]["text"].startswith(" "):
+        toks[0]["text"] = " " + toks[0]["text"]  # the first token starts the first word
+    return words_to_sentences(merge_tokens_to_words(toks))
+
+
+def _onnx_model_dir(model: str) -> str:
+    """A real (symlink-free) folder with the model. onnxruntime refuses external weights that are
+    symlinks out of the model folder, which is what the Hugging Face cache consists of."""
+    from huggingface_hub import snapshot_download
+    from onnx_asr.resolver import model_repos
+
+    repo = model_repos.get(model)
+    if repo is None:
+        return model  # a local path or an unknown name: let onnx-asr deal with it
+    target = Path.home() / ".cache" / "uadub" / "onnx" / model
+    return snapshot_download(repo, local_dir=str(target), allow_patterns=[
+        "config.json", "vocab.txt", "encoder-model.onnx", "encoder-model.onnx.data", "decoder_joint-model.onnx"])
+
+
+def _onnx_sentences(wav: Path, lang: str | None, model: str, device: str | None) -> list[dict]:
+    _need("onnx_asr", "cpu")
+    import onnx_asr
+    import soundfile as sf
+
+    from .device import ort_providers, pick
+
+    waveform, sr = sf.read(str(wav), dtype="float32")
+    if waveform.ndim > 1:
+        waveform = waveform.mean(axis=1)
+    m = onnx_asr.load_model(model, _onnx_model_dir(model), providers=ort_providers(pick(device))).with_timestamps()
+    # Parakeet v3 detects the language itself; only a non-English hint is passed on.
+    kwargs = {"language": lang} if lang and lang != "en" else {}
+    r = m.recognize(waveform, sample_rate=sr, **kwargs)
+    return tokens_to_sentences(list(r.tokens or []), list(r.timestamps or []))
 
 
 def _ct2_sentences(wav: Path, lang: str, model: str, device: str | None) -> list[dict]:

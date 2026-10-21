@@ -2102,3 +2102,51 @@ def test_transcribe_dispatches_by_backend(monkeypatch, tmp_path):
     import pytest
     with pytest.raises(ValueError):
         asr.transcribe(wav, lang="en", model="m", backend="nemo", total=1.0)
+
+
+def test_tokens_to_sentences_from_onnx_asr():
+    from uadub.asr import tokens_to_sentences
+
+    tokens = ["Hel", "lo", " there", ".", " Bye", "!", "", " now"]
+    stamps = [0.00, 0.10, 0.30, 0.50, 2.00, 2.20, 2.30, 2.40]
+    sents = tokens_to_sentences(tokens, stamps)
+    assert [s["text"] for s in sents] == ["Hello there.", "Bye!", "now"]  # first token without a space starts a word
+    assert sents[0]["words"][0] == {"w": "Hello", "start": 0.0, "end": 0.3}  # a word ends where the next token starts
+    assert sents[0]["start"] == 0.0 and sents[0]["end"] == 2.0  # the sentence ends at the next token's start
+    assert sents[-1]["words"][-1]["end"] == 2.48  # last token: start + tail (Review Focus 4)
+    assert tokens_to_sentences([], []) == []
+
+
+def test_missing_backend_names_the_extra(monkeypatch, tmp_path):
+    import importlib.util
+
+    import pytest
+
+    from uadub import asr
+
+    real_find = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec",
+                        lambda name, *a: None if name.startswith("onnx_asr") else real_find(name, *a))
+    with pytest.raises(asr.MissingBackend, match=r"uadub\[cpu\]"):  # Review Focus 3
+        asr.transcribe(tmp_path / "a.wav", lang="en", model=asr.ONNX_PARAKEET, backend="onnx", total=1.0)
+
+
+def test_ort_providers_follow_the_device():
+    from uadub.device import ort_providers
+
+    assert ort_providers("cuda") == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    assert ort_providers("mps") == ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    assert ort_providers("cpu") == ["CPUExecutionProvider"]
+
+
+def test_device_choice_prefers_cuda_then_mps_then_cpu():
+    from uadub.device import choose
+
+    assert choose(None, cuda=True, mps=False) == "cuda"
+    assert choose(None, cuda=False, mps=True) == "mps"
+    assert choose(None, cuda=False, mps=False) == "cpu"
+    assert choose("cpu", cuda=True, mps=True) == "cpu"  # --device wins
+    assert choose(None, cuda=True, mps=False, env="cpu") == "cpu"  # UADUB_DEVICE wins over detection
+    import pytest
+    with pytest.raises(ValueError):
+        choose("tpu", cuda=False, mps=False)
