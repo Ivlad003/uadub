@@ -2350,3 +2350,17 @@ def test_prefetch_plan_per_backend(tmp_path):
     assert not any("mlx-community" in r for r in pc["hf_repos"]) and ST_MODEL in pc["hf_repos"]
     pc_all = prefetch_plan(Options(asr_backend="onnx", asr_model=ONNX_PARAKEET, llm="ollama:gemma3:12b", **base), all_engines=True)
     assert pc_all["ct2_models"] == [CT2_WHISPER]
+
+
+def test_install_scripts_exist_and_parse():
+    import shutil
+    import subprocess
+
+    root = Path(__file__).resolve().parents[1]
+    sh, ps1 = root / "install.sh", root / "install.ps1"
+    assert sh.exists() and ps1.exists()
+    assert subprocess.run(["bash", "-n", str(sh)]).returncode == 0  # syntax only
+    text = ps1.read_text(encoding="utf-8")
+    assert "uv tool install" in text and "ollama" in text.lower() and "--doctor" in text
+    if shutil.which("pwsh"):
+        assert subprocess.run(["pwsh", "-NoProfile", "-Command", f"[void][scriptblock]::Create((Get-Content -Raw '{ps1}'))"]).returncode == 0
