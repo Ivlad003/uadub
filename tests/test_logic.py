@@ -2070,3 +2070,35 @@ def test_choose_asr_backend_by_platform_and_language(tmp_path):
     from uadub.cli import build_parser
     assert build_parser().parse_args(["x.mp4"]).asr_backend == "auto"
     assert build_parser().parse_args(["x.mp4", "--asr-backend", "onnx"]).asr_backend == "onnx"
+
+
+def test_whisper_words_filters_hallucinations_and_silence():
+    from uadub.asr import whisper_words
+
+    segs = [{"text": "Thanks for watching", "no_speech_prob": 0.1, "avg_logprob": -0.3,
+             "words": [{"word": " Thanks", "start": 0.0, "end": 0.4}]},
+            {"text": "mumble", "no_speech_prob": 0.9, "avg_logprob": -1.5,
+             "words": [{"word": " mumble", "start": 1.0, "end": 1.3}]},
+            {"text": "오빠, 어디 가요?", "no_speech_prob": 0.0, "avg_logprob": -0.2,
+             "words": [{"word": " 오빠,", "start": 2.0, "end": 2.4}, {"word": " 어디", "start": 2.5, "end": 2.8},
+                       {"word": " 가요?", "start": 2.9, "end": 3.2}]}]
+    words = whisper_words(segs)
+    assert [w["w"] for w in words] == ["오빠,", "어디", "가요?"]  # the short English hallucination and the silent segment are dropped
+    assert words[0]["start"] == 2.0 and words[-1]["end"] == 3.2
+
+
+def test_transcribe_dispatches_by_backend(monkeypatch, tmp_path):
+    from uadub import asr
+
+    calls = []
+    monkeypatch.setattr(asr, "_mlx_sentences", lambda wav, lang, model, total: calls.append(("mlx", model)) or [])
+    monkeypatch.setattr(asr, "_onnx_sentences", lambda wav, lang, model, device: calls.append(("onnx", model)) or [])
+    monkeypatch.setattr(asr, "_ct2_sentences", lambda wav, lang, model, device: calls.append(("ct2", model)) or [])
+    wav = tmp_path / "a.wav"
+    asr.transcribe(wav, lang="en", model="m1", backend="mlx", total=10.0)
+    asr.transcribe(wav, lang="en", model="m2", backend="onnx", total=10.0)
+    asr.transcribe(wav, lang="ko", model="m3", backend="ctranslate", total=10.0)
+    assert calls == [("mlx", "m1"), ("onnx", "m2"), ("ct2", "m3")]
+    import pytest
+    with pytest.raises(ValueError):
+        asr.transcribe(wav, lang="en", model="m", backend="nemo", total=1.0)

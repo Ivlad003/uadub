@@ -13,7 +13,7 @@ import numpy as np
 from . import audio as A
 from .config import CACHE_DIR, SYLLABLE_RATE, Options
 from .fit import MAX_RATE, MIN_RATE, PACE_TOL, SPILL, emotion_strength, line_start, pace_cap, place_clips, st_engine_speed, st_speed, target_duration
-from .segments import assign_slots, build_units, merge_tokens_to_words, slot
+from .segments import assign_slots, build_units, slot
 from .srt import make_cues, write_srt
 
 
@@ -95,49 +95,6 @@ def stage_separate(opt: Options) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Typical Whisper hallucinations on silence/music (dropped when they come out of nowhere).
-_HALLUCINATIONS = ("시청해주셔서 감사합니다", "구독과 좋아요", "MBC 뉴스", "자막 제공", "다음 영상에서",
-                   "thanks for watching", "subtitles by", "ご視聴ありがとうございました")
-
-
-def _whisper_sentences(opt: Options, wav: Path) -> list[dict]:
-    import mlx_whisper
-
-    from .segments import words_to_sentences
-
-    r = mlx_whisper.transcribe(str(wav), path_or_hf_repo=opt.asr_model, language=opt.source_lang,
-                               word_timestamps=True, condition_on_previous_text=False,
-                               hallucination_silence_threshold=2.0, no_speech_threshold=0.6, verbose=None)
-    words = []
-    for seg in r.get("segments", []):
-        text = seg.get("text", "").strip()
-        if seg.get("no_speech_prob", 0) > 0.6 and seg.get("avg_logprob", 0) < -1.0:
-            continue
-        if any(h in text.lower() for h in _HALLUCINATIONS) and len(text) < 40:
-            continue
-        for wd in seg.get("words", []):
-            words.append({"w": wd["word"].strip(), "start": float(wd["start"]), "end": float(wd["end"])})
-    return words_to_sentences(words)
-
-
-def _parakeet_sentences(opt: Options, wav: Path, total: float) -> list[dict]:
-    from parakeet_mlx import DecodingConfig, SentenceConfig, from_pretrained
-
-    model = from_pretrained(opt.asr_model)
-    cfg = DecodingConfig(sentence=SentenceConfig(max_words=30, silence_gap=0.7, max_duration=10.0))
-    res = model.transcribe(str(wav), decoding_config=cfg,
-                           chunk_duration=120.0 if total > 150 else None, overlap_duration=15.0)
-    sentences = []
-    for s in res.sentences:
-        text = s.text.strip()
-        if not text:
-            continue
-        toks = [{"text": t.text, "start": float(t.start), "end": float(t.end)} for t in s.tokens]
-        sentences.append({"start": round(float(s.start), 3), "end": round(float(s.end), 3),
-                          "text": text, "words": merge_tokens_to_words(toks)})
-    return sentences
-
-
 FEMALE_F0 = 165.0  # Hz: typical adult male voices sit below, female above
 
 
@@ -162,10 +119,10 @@ def stage_asr(opt: Options) -> None:
     else:
         src = _voice_src(w)
         A.to_mono_16k(src, w / "asr16k.wav")
-        if "parakeet" in opt.asr_model:
-            sentences = _parakeet_sentences(opt, w / "asr16k.wav", total)
-        else:
-            sentences = _whisper_sentences(opt, w / "asr16k.wav")
+        from .asr import transcribe
+
+        sentences = transcribe(w / "asr16k.wav", lang=opt.source_lang, model=opt.asr_model,
+                               backend=opt.asr_backend, total=total, device=opt.device)
         (w / "asr16k.wav").unlink(missing_ok=True)
         log(f"   • розпізнано {len(sentences)} речень, {sum(len(s['words']) for s in sentences)} слів")
     # Whisper word times and subtitle cues are approximate, and Parakeet sentence ends run into the
@@ -366,15 +323,6 @@ def _emotion_styles(eng, opt: Options, units: list[dict], voices: list[str]) -> 
     return styles
 
 
-def _transcribe_reference(path: str) -> str:
-    """Transcript of a user-supplied reference voice (parakeet v3 understands Ukrainian too)."""
-    from parakeet_mlx import from_pretrained
-
-    from .config import DEFAULT_ASR
-
-    return from_pretrained(DEFAULT_ASR).transcribe(path).text.strip()
-
-
 def stage_tts(opt: Options) -> None:
     from tqdm import tqdm
 
@@ -449,7 +397,9 @@ def stage_tts(opt: Options) -> None:
         elif kind == "clone_file":
             ref, _ = A.read(Path(arg), sr=eng.sr, mono=True)
             ref = ref[: int(15 * eng.sr)]
-            ref_text = opt.ref_text or _transcribe_reference(arg)
+            from .asr import transcribe_text
+
+            ref_text = opt.ref_text or transcribe_text(arg, backend=opt.asr_backend, device=opt.device)
             log(f"   • еталонний голос: «{ref_text[:80]}»")
             prompts = [eng.reference(ref, eng.sr, ref_text)] * len(units)
         else:  # clone each line from the original speaker's own voice
