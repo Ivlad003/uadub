@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import subprocess
 from pathlib import Path
 
 from .llm import LLM, extract_json
@@ -180,7 +181,13 @@ def _ask(llm: LLM, system: str, user: str, *, max_tokens: int, retries: int = 2)
     # Greedy decoding first: quantized MoE models produce the most reliable JSON that way.
     last_err: Exception | None = None
     for attempt in range(retries + 1):
-        reply = llm.chat(system, user, max_tokens=max_tokens, temperature=0.0 if attempt == 0 else 0.2 * attempt)
+        try:
+            reply = llm.chat(system, user, max_tokens=max_tokens, temperature=0.0 if attempt == 0 else 0.2 * attempt)
+        except Exception as e:  # transport: a dropped connection, a CLI exit — retried like bad JSON
+            last_err = e
+            if isinstance(e, (TimeoutError, subprocess.TimeoutExpired)):
+                break  # a second wait of the same length would most likely time out too
+            continue
         try:
             data = extract_json(reply)
             if isinstance(data, list):
@@ -195,6 +202,17 @@ def _ask(llm: LLM, system: str, user: str, *, max_tokens: int, retries: int = 2)
     raise RuntimeError(f"LLM не дала валідний JSON після {retries + 1} спроб: {last_err}")
 
 
+def _reply_items(data: dict, key: str = "lines") -> list[dict]:
+    """The objects an LLM reply holds under `key`. Anything of another shape is dropped, and a text
+    field that is not a string is removed, so the passes never crash on a well-formed but wrong reply."""
+    items = data.get(key) if isinstance(data, dict) else None
+    out: list[dict] = []
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict):
+            out.append({k: v for k, v in item.items() if k not in ("uk", "tts") or isinstance(v, str)})
+    return out
+
+
 def _clean_tts(uk: str, tts: str) -> str:
     """Drop an LLM 'tts' line that broke its own rules (Latin or digits left) — the
     deterministic normalizer reading the subtitle text is safer than garbage like «кра komma»."""
@@ -202,7 +220,9 @@ def _clean_tts(uk: str, tts: str) -> str:
         return ""
     if re.search(r"[A-Za-z0-9]", tts):
         return ""
-    if re.search(r"[^\W\d_]", re.sub(r"[А-Яа-яІіЇїЄєҐґ\u0301]", "", tts)):  # letters of another script: LLM garbage
+    if re.search(r"[ЁёЫыЭэЪъ]", tts):  # Russian letters: the model slipped into the wrong language
+        return ""
+    if re.search(r"[^\W\d_]", re.sub(r"[А-Яа-яІіЇїЄєҐґ\u0301'’ʼ]", "", tts)):  # letters of another script: LLM garbage
         return ""
     return tts
 
@@ -403,6 +423,14 @@ def glossary_pronunciations(glossary: list[dict]) -> dict[str, str]:
     return out
 
 
+def _same_name(a: str, b: str) -> bool:
+    """«пайтон» and «пайтоні» are one name in two cases, not two spellings to unify."""
+    if a == b:
+        return True
+    short, long_ = sorted((a, b), key=len)
+    return long_.startswith(short) and 0 < len(long_) - len(short) <= 3 and long_[len(short):].isalpha()
+
+
 def unify_pronunciations(units: list[dict], pronunciations: dict[str, str] | None = None) -> int:
     """Make the LLM pronounce each Latin name the same way in every line.
 
@@ -444,7 +472,7 @@ def unify_pronunciations(units: list[dict], pronunciations: dict[str, str] | Non
             canonical = next(text for _, _, _, text in occurrences if key(text) == best)
         best = key(canonical)
         for u, start, end, text in occurrences:
-            if key(text) == best:
+            if _same_name(key(text), best):
                 continue
             repl = canonical[0].upper() + canonical[1:] if text[0].isupper() else canonical.lower()
             edits.setdefault(id(u), (u, []))[1].append((start, end, repl))
@@ -459,6 +487,7 @@ PAUSE_RESERVE = 0.3  # seconds of the slot kept for the pause before the next li
 SYL_PER_WORD = 2.4  # average spoken Ukrainian
 SHORTEN_FLOOR = 0.7  # a rewrite shorter than this share of the budget threw away too much …
 SHORTEN_FLOOR_UNLESS = 1.3  # … unless the line was over the budget by more than this factor
+ANGLICISM_CEILING = 1.3  # a de-anglicised rewrite may grow, but not past this share of the budget
 
 
 EXPAND_BELOW = 0.7  # a line under this share of its budget leaves the voice silent while the speaker talks
@@ -532,7 +561,8 @@ def translate_units(llm: LLM, units: list[dict], *, rate: float, gender: str | N
     expert = (field or "the field of this video") if domain else None
     if not gender and brief.get("speaker_gender") in ("male", "female"):
         gender = brief["speaker_gender"]
-    glossary = (brief.get("glossary") or []) + _load_glossary(glossary_path)
+    glossary = [g for g in (brief.get("glossary") if isinstance(brief.get("glossary"), list) else [])
+                if isinstance(g, dict)] + _load_glossary(glossary_path)
     gl_text = ""
     if glossary:
         says = glossary_pronunciations(glossary)
@@ -640,7 +670,7 @@ def spell_latin(llm: LLM, units: list[dict], *, log=print) -> int:
             data = _ask(llm, SPELL_SYSTEM, json.dumps(payload, ensure_ascii=False), max_tokens=200 + 120 * len(batch))
         except RuntimeError:
             continue
-        for item in data.get("lines", []):
+        for item in _reply_items(data):
             try:
                 u = by_id[int(item.get("id"))]
             except (KeyError, TypeError, ValueError):
@@ -695,7 +725,7 @@ def fix_anglicisms(llm: LLM, units: list[dict], *, glossary: list[dict] | None =
                         max_tokens=200 + 160 * len(batch))
         except RuntimeError:
             continue
-        for item in data.get("lines", []):
+        for item in _reply_items(data):
             try:
                 u = by_id[int(item.get("id"))]
             except (KeyError, TypeError, ValueError):
@@ -706,8 +736,13 @@ def fix_anglicisms(llm: LLM, units: list[dict], *, glossary: list[dict] | None =
                 if tts:
                     u["tts"] = tts
             elif uk and uk != u["uk"]:
-                u["uk"] = uk
                 tts = _clean_tts(uk, str(item.get("tts") or "").strip())
+                if lost_facts(u["uk"], uk):  # the rewrite dropped a label, a number or a name
+                    continue
+                new_syl = syllables(to_speech_text(tts or uk))
+                if new_syl > _syl(u) and new_syl > ANGLICISM_CEILING * u["max_syl"]:
+                    continue  # this pass runs after the shortening ones: a ballooned line would stay that way
+                u["uk"] = uk
                 if tts:
                     u["tts"] = tts
                 else:
@@ -738,14 +773,23 @@ def _pick_variant(item: dict, answer) -> int | None:
     return None
 
 
-def _fallback_marks(ask: list[dict], marks: dict[int, dict[int, int]], *, broad: bool) -> dict[int, dict[int, int]]:
-    """Homographs the two votes did not settle: for StyleTTS2 (`broad`) take the dictionary's first
-    variant — a deterministic choice beats the engine's guess, and the mark costs nothing there."""
+def _is_both(answer) -> bool:
+    return isinstance(answer, str) and answer.strip().strip(".,!?«»\"'").lower() in ("both", "обидва")
+
+
+def _fallback_marks(ask: list[dict], marks: dict[int, dict[int, int]], *, broad: bool,
+                    undecided: set[str] | frozenset[str] = frozenset()) -> dict[int, dict[int, int]]:
+    """Homographs the two votes did not settle: for StyleTTS2 (`broad`) take the variant the
+    dictionary's grammar picked (`_resolved`), else its first one — a deterministic choice beats the
+    engine's guess, and the mark costs nothing there. A word the LLM called «both» stays unmarked."""
     out = {ui: dict(m) for ui, m in marks.items()}
     if broad:
         for a in ask:
+            if a["id"] in undecided:
+                continue
             ui, n = map(int, a["id"].split(":"))
-            out.setdefault(ui, {}).setdefault(n, a["_options"][0])
+            pick = a.get("_resolved")
+            out.setdefault(ui, {}).setdefault(n, pick if pick is not None else a["_options"][0])
     return out
 
 
@@ -771,7 +815,8 @@ def resolve_homographs(llm: LLM, units: list[dict], *, broad: bool = False, log=
             # LLM makes every call; it only has to choose between the dictionary's variants.
             ask.append({"id": f"{ui}:{h['n']}", "sentence": speech_text(u), "word": h["word"],
                         "variants": [variant_caps(h["word"].lower(), o) for o in h["options"]],
-                        "_options": h["options"]})
+                        "_options": h["options"], "_resolved": h.get("resolved")})
+    undecided: set[str] = set()  # answered «both»: free variation, nothing to mark
     if ask:
         log(f"   • наголоси омографів: {len(ask)} слів, вибір за контекстом (LLM)")
         for i in range(0, len(ask), 30):
@@ -790,8 +835,10 @@ def resolve_homographs(llm: LLM, units: list[dict], *, broad: bool = False, log=
                     data = {}
                 by_id = {a["id"]: a for a in batch}
                 got: dict[str, int] = {}
-                for item in data.get("items", []):
+                for item in _reply_items(data, "items"):
                     a = by_id.get(str(item.get("id")))
+                    if a and _is_both(item.get("answer")):
+                        undecided.add(a["id"])
                     choice = _pick_variant(a, item.get("answer")) if a else None
                     if choice is not None:
                         got[a["id"]] = choice
@@ -800,7 +847,7 @@ def resolve_homographs(llm: LLM, units: list[dict], *, broad: bool = False, log=
                 if votes[1].get(aid) == choice:
                     ui, n = map(int, aid.split(":"))
                     marks.setdefault(ui, {})[n] = choice
-    marks = _fallback_marks(ask, marks, broad=broad)
+    marks = _fallback_marks(ask, marks, broad=broad, undecided=undecided)
     for ui, m in marks.items():
         units[ui]["tts"] = apply_marks(speech_text(units[ui]), m)
     return {"marked": sum(map(len, marks.values())), "homographs": len(ask)}
@@ -854,7 +901,7 @@ def _translate_chunk(llm, system, context, units, chunk, by_id, fixed_gender=Non
             for part in (left[:half], left[half:]):
                 _translate_chunk(llm, system, context, units, part, by_id, fixed_gender, edge)
             return
-        for item in data.get("lines", []):
+        for item in _reply_items(data):
             try:
                 uid = int(item.get("id"))
             except (TypeError, ValueError):
@@ -916,7 +963,7 @@ def _vary_starts(llm: LLM, items: list[dict], *, units: list[dict], context: dic
         return
     by_id = {u["id"]: u for u in items}
     pos = {id(u): i for i, u in enumerate(units)}
-    for item in data.get("lines", []):
+    for item in _reply_items(data):
         try:
             u = by_id[int(item.get("id"))]
         except (KeyError, TypeError, ValueError):
@@ -944,7 +991,7 @@ def _expand(llm: LLM, items: list[dict], *, units: list[dict], context: dict | N
         return []
     by_id = {u["id"]: u for u in items}
     over: list[tuple[dict, tuple]] = []
-    for item in data.get("lines", []):
+    for item in _reply_items(data):
         try:
             u = by_id[int(item.get("id"))]
         except (KeyError, TypeError, ValueError):
@@ -984,7 +1031,7 @@ def _shorten(llm: LLM, items: list[dict], *, units: list[dict] | None = None, co
     except RuntimeError:
         return
     by_id = {u["id"]: u for u in items}
-    for item in data.get("lines", []):
+    for item in _reply_items(data):
         try:
             u = by_id[int(item.get("id"))]
         except (KeyError, TypeError, ValueError):

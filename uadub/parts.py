@@ -247,7 +247,7 @@ def assemble(video: Path, items: list[tuple[Path, float]], out: Path, master: Pa
     whole = master / "dub_all.flac"
     try:
         A._run(["ffmpeg", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c:a", "flac", str(whole)])
-        A.mux(Path(video), whole, Path(out), srt=master / "uk.srt", keep_original=keep_original)
+        A.mux(Path(video), whole, Path(out), srt=master / "uk.srt", keep_original=keep_original, lang=src_lang)
     finally:
         whole.unlink(missing_ok=True)
         lst.unlink(missing_ok=True)

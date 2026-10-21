@@ -1449,3 +1449,335 @@ def test_expand_outcome():
     assert expand_outcome(old_syl=29, new_syl=57, max_syl=42) == "shorten"  # 136 %: usable after a trim
     assert expand_outcome(old_syl=7, new_syl=22, max_syl=15) == "reject"  # 147 %: a trim will not get there
     assert expand_outcome(old_syl=7, new_syl=6, max_syl=15) == "reject"
+
+
+def test_redo_translate_drops_stale_review(tmp_path, monkeypatch):
+    """A rerun of translate with the same fingerprint must not let the old review.md overwrite it (B1)."""
+    import json
+
+    import pytest
+
+    from uadub import cli
+    from uadub.config import Options
+    from uadub.review import REVIEW
+
+    runs: list[str] = []
+
+    def fake_stage(stage, opt):
+        if stage == "translate":
+            runs.append(stage)
+            units = [{"id": 1, "start": 0.0, "end": 2.0, "slot_end": 2.0, "text": "Hi.",
+                      "uk": f"Переклад {len(runs)}.", "max_syl": 10}]
+            (opt.work / "units.json").write_text(json.dumps(units, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(cli, "_run_stage", fake_stage)
+    opt = Options(input=str(tmp_path / "a.mp4"), output=str(tmp_path / "a.uk.mp4"),
+                  workdir=str(tmp_path / "w"), voice="st")
+    with pytest.raises(cli.UserStop):  # stdin is not a tty: the pause exports review.md and stops
+        cli.run_pipeline(opt, review=True, summary=False)
+    path = opt.work / REVIEW
+    path.write_text(path.read_text(encoding="utf-8").replace("UK:  Переклад 1.", "UK:  Моя правка."),
+                    encoding="utf-8")
+    cli.run_pipeline(opt, summary=False)
+    assert json.loads((opt.work / "units.json").read_text(encoding="utf-8"))[0]["uk"] == "Моя правка."
+
+    cli.run_pipeline(opt, redo="translate", summary=False)
+    assert runs == ["translate", "translate"]
+    assert json.loads((opt.work / "units.json").read_text(encoding="utf-8"))[0]["uk"] == "Переклад 2."
+
+
+def test_llm_passes_survive_wrong_shaped_lines():
+    """Valid JSON of the wrong shape (B2): every pass keeps the current text instead of crashing."""
+    import json as _json
+
+    from uadub.translate import _expand, _shorten, _vary_starts, fix_anglicisms, spell_latin, translate_units
+
+    shapes = ['{"lines": null}', '{"lines": [1, "x", null]}', '{"lines": {"id": 1, "uk": "Привіт."}}',
+              '{"lines": [{"id": null, "uk": 5}, {"id": "1", "uk": null}]}']
+    for reply in shapes:
+        class FakeLLM:
+            def chat(self, system, user, *, max_tokens=4096, temperature=0.3):
+                if system.startswith("You prepare a translation brief"):
+                    return _json.dumps({"summary": "Привітання."})
+                return reply
+
+        units = [{"id": 1, "text": "Hello there.", "start": 0.0, "end": 2.0, "slot_end": 2.0}]
+        translate_units(FakeLLM(), units, rate=6.0, gender="male", glossary_path=None, stress="off",
+                        log=lambda *_: None)
+        assert units[0]["uk"] == "Hello there."  # fallback to the source text
+
+        units = [{"id": 1, "text": "Hello there.", "uk": "Привіт усім.", "max_syl": 4, "max_words": 2}]
+        _shorten(FakeLLM(), units, units=units, context=None, attempt=1)
+        assert _expand(FakeLLM(), units, units=units, context=None) == []
+        _vary_starts(FakeLLM(), units, units=units, context=None)
+        assert units[0]["uk"] == "Привіт усім."
+        units = [{"id": 1, "text": "Use the API.", "uk": "Юзайте API.", "max_syl": 8}]
+        fix_anglicisms(FakeLLM(), units, log=lambda *_: None)
+        spell_latin(FakeLLM(), units, log=lambda *_: None)
+        assert units[0]["uk"] == "Юзайте API." and "tts" not in units[0]
+
+
+def test_ask_turns_backend_failures_into_retries_and_runtime_error():
+    """A transport error from the backend (B3) is retried, then reported as RuntimeError."""
+    import subprocess
+
+    import pytest
+
+    from uadub.translate import _ask
+
+    class Flaky:
+        calls = 0
+
+        def chat(self, system, user, *, max_tokens=4096, temperature=0.3):
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError("connection reset")
+            return '{"lines": [{"id": 1, "uk": "Так."}]}'
+
+    llm = Flaky()
+    assert _ask(llm, "s", "u", max_tokens=10) == {"lines": [{"id": 1, "uk": "Так."}]}
+    assert llm.calls == 2
+
+    class Dead:
+        calls = 0
+
+        def chat(self, system, user, *, max_tokens=4096, temperature=0.3):
+            self.calls += 1
+            raise subprocess.TimeoutExpired("claude", 900)
+
+    dead = Dead()
+    with pytest.raises(RuntimeError, match="900"):
+        _ask(dead, "s", "u", max_tokens=10)
+    assert dead.calls == 1  # a timeout is not retried: it would repeat and triple the wait
+
+
+def test_brief_glossary_of_wrong_shape_is_ignored():
+    """A brief whose glossary is not a list of dicts (B4) must not crash translate; dict entries survive."""
+    import json as _json
+
+    from uadub.translate import translate_units
+
+    for glossary in ("none", ["LM Studio", {"src": "deploy", "uk": "деплой"}, None, 7]):
+        seen = []
+
+        class FakeLLM:
+            def chat(self, system, user, *, max_tokens=4096, temperature=0.3):
+                seen.append(system)
+                if system.startswith("You prepare a translation brief"):
+                    return _json.dumps({"summary": "Про деплой.", "glossary": glossary})
+                if system.startswith("You are an expert audiovisual translator"):
+                    return _json.dumps({"lines": [{"id": 1, "uk": "Робимо деплой."}]})
+                return _json.dumps({"lines": []})
+
+        units = [{"id": 1, "text": "Let's deploy.", "start": 0.0, "end": 2.0, "slot_end": 2.0}]
+        translate_units(FakeLLM(), units, rate=6.0, gender="male", glossary_path=None, stress="off",
+                        domain="auto", log=lambda *_: None)
+        assert units[0]["uk"] == "Робимо деплой."
+        if isinstance(glossary, list):
+            assert "деплой" in next(s for s in seen if s.startswith("You are an expert audiovisual translator"))
+
+
+def test_hf_cached_accepts_any_snapshot_file(tmp_path):
+    """The offline switch must see a cached repo whatever its files are called (StyleTTS2 has config.yml) (B5)."""
+    from uadub.cli import _hf_cached
+
+    snap = tmp_path / "models--patriotyk--styletts2_ukrainian_multispeaker" / "snapshots" / "abc123"
+    snap.mkdir(parents=True)
+    (snap / "config.yml").write_text("x")
+    assert _hf_cached("patriotyk/styletts2_ukrainian_multispeaker", cache=tmp_path)
+    (tmp_path / "models--a--empty" / "snapshots").mkdir(parents=True)
+    assert not _hf_cached("a/empty", cache=tmp_path)
+    assert not _hf_cached("a/missing", cache=tmp_path)
+
+
+def test_failed_review_agent_is_not_recorded(tmp_path, monkeypatch):
+    """An agent that exits non-zero or is not installed did not review anything (B6)."""
+    import json
+
+    from uadub import cli
+    from uadub.config import Options
+    from uadub.review import run_agent
+
+    opt = Options(input=str(tmp_path / "a.mp4"), output=str(tmp_path / "a.uk.mp4"),
+                  workdir=str(tmp_path / "w"), voice="st")
+    opt.work.mkdir()
+    opt.save(opt.work / "options.json")
+    assert run_agent("true", opt.work) is True
+    assert run_agent("false", opt.work) is False
+    assert run_agent("uadub-no-such-command-xyz", opt.work) is False
+
+    def fake_stage(stage, o):
+        if stage == "translate":
+            (o.work / "units.json").write_text(json.dumps(
+                [{"id": 1, "start": 0.0, "end": 2.0, "slot_end": 2.0, "text": "Hi.", "uk": "Привіт.", "max_syl": 10}],
+                ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(cli, "_run_stage", fake_stage)
+    cli.run_pipeline(opt, review_with="false", summary=False)
+    assert "agent_review" not in json.loads((opt.work / "state.json").read_text())
+    cli.run_pipeline(opt, review_with="true", redo="review", summary=False)
+    assert json.loads((opt.work / "state.json").read_text())["agent_review"]["spec"] == "true"
+
+
+def test_unify_pronunciations_keeps_declined_forms():
+    """A declined form of the same spelling is the same name, not a variant to normalise (B7)."""
+    from uadub.translate import unify_pronunciations
+
+    units = [{"id": 1, "uk": "GitHub є.", "tts": "ґітхаб є."},
+             {"id": 2, "uk": "На GitHub є.", "tts": "На ґітхабі є."},
+             {"id": 3, "uk": "GitHub є.", "tts": "ґітхаб є."},
+             {"id": 4, "uk": "На GitHub є.", "tts": "На гітхабі є."}]
+    assert unify_pronunciations(units, {}) == 1
+    assert [u["tts"] for u in units] == ["ґітхаб є.", "На ґітхабі є.", "ґітхаб є.", "На ґітхаб є."]
+    units = [{"id": 1, "uk": "Пишу на Python.", "tts": "Пишу на пайтоні."},
+             {"id": 2, "uk": "Python є.", "tts": "пітон є."}]
+    assert unify_pronunciations(units, {"Python": "пайтон"}) == 1
+    assert [u["tts"] for u in units] == ["Пишу на пайтоні.", "пайтон є."]
+
+
+def test_digits_after_letters_are_spoken():
+    """«M1», «H100», «x86»: a digit glued to a letter is still a number (B8)."""
+    for text, words in (("M1 Pro", "один"), ("H100", "сто"), ("x86", "вісімдесят шість")):
+        s = to_speech_text(text)
+        assert words in s and not any(c.isdigit() for c in s), (text, s)
+    assert to_speech_text("M1 Pro").startswith("ем один")
+
+
+def test_clean_tts_keeps_apostrophe_and_rejects_russian_letters():
+    """The modifier apostrophe is Ukrainian; ы э ъ ё are not (B9)."""
+    from uadub.translate import _clean_tts
+
+    assert _clean_tts("5 штук", "пʼять штук") == "пʼять штук"
+    assert _clean_tts("5 штук", "п'ять штук") == "п'ять штук"
+    for bad in ("это мы", "ёлка", "объём", "мы были"):
+        assert _clean_tts("x", bad) == "", bad
+
+
+def test_parse_review_joins_continuation_lines():
+    """A UK:/TTS: value wrapped onto the next line is one value, not a silently cut one (B10)."""
+    from uadub.review import parse_review
+
+    text = ("## 0001  00:00.0–00:02.0 · слот 2.0 с · складів 5/10\nEN:  Hi there.\nUK:  Привіт,\nце довгий рядок.\n"
+            "TTS: Привіт,\nце довгий рядок для озвучення.\nНАГОЛОСИ: Приві́т\n\n"
+            "## 0002  00:03.0–00:04.0 · слот 1.0 с · складів 2/5\nEN:  Bye.\nUK:  Бувай.\nTTS: \n\n"
+            "---\n\n**Немає в словнику (можливі англіцизми чи помилки, перевірте):** апка\n")
+    items = parse_review(text)
+    assert items[1] == {"uk": "Привіт, це довгий рядок.", "tts": "Привіт, це довгий рядок для озвучення."}
+    assert items[2] == {"uk": "Бувай.", "tts": ""}
+
+
+def test_cover_art_is_not_a_video_stream(tmp_path):
+    """An mp3 with embedded cover art is audio-only: output .m4a, no one-frame "video" (B11)."""
+    import subprocess
+
+    import numpy as np
+
+    from uadub import audio as A
+
+    cover = tmp_path / "cover.png"
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:size=64x64:d=1",
+                    "-frames:v", "1", str(cover)], check=True)
+    song = tmp_path / "song.mp3"
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=440:sample_rate=44100:duration=3", "-i", str(cover), "-map", "0:a", "-map", "1:v",
+                    "-c:a", "libmp3lame", "-c:v", "copy", "-disposition:v:0", "attached_pic", "-id3v2_version", "3",
+                    str(song)], check=True)
+    assert any(s.get("codec_type") == "video" for s in A.probe(song)["streams"])  # ffprobe does list the picture
+    assert A.has_stream(song, "audio") and not A.has_stream(song, "video")
+    dub = tmp_path / "dub.flac"
+    A.write_flac(dub, np.zeros((44100 * 2, 2), np.float32), 44100)
+    out = tmp_path / "song.uk.m4a"
+    A.mux(song, dub, out, srt=None, keep_original=True)
+    kinds = [s["codec_type"] for s in A.probe(out)["streams"]]
+    assert kinds == ["audio", "audio"]
+
+
+def test_mux_tags_the_original_track_with_its_language(tmp_path):
+    """The kept original track carries the source language, not always English (B12)."""
+    import numpy as np
+
+    from uadub import audio as A
+
+    dub = tmp_path / "dub.flac"
+    A.write_flac(dub, np.zeros((44100 * 2, 2), np.float32), 44100)
+    out = tmp_path / "v.uk.mkv"  # mkv keeps the title tag; mp4 stores only the language
+    A.mux(_test_video(tmp_path / "v.mp4"), dub, out, srt=None, keep_original=True, lang="ko")
+    audio = [s for s in A.probe(out)["streams"] if s["codec_type"] == "audio"]
+    assert audio[0]["tags"]["language"] == "ukr"
+    assert audio[1]["tags"]["language"] == "kor" and audio[1]["tags"]["title"] == "Korean (original)"
+    from uadub.config import Options
+
+    base = dict(input="a.mp4", output="a.uk.mp4", workdir=str(tmp_path), voice="st")
+    assert "source_lang" not in Options(**base).fingerprint("mux")  # English caches stay valid
+    assert Options(source_lang="ko", **base).fingerprint("mux")["source_lang"] == "ko"
+
+
+def test_homograph_fallback_prefers_grammar_and_skips_both():
+    """Unsettled homographs take the grammar-resolved variant; «both» leaves the word unmarked (B13)."""
+    from uadub.translate import _fallback_marks
+
+    ask = [{"id": "0:2", "_options": [0, 1], "_resolved": 1}, {"id": "0:5", "_options": [1, 2], "_resolved": 2},
+           {"id": "3:1", "_options": [0, 2], "_resolved": None}, {"id": "3:4", "_options": [0, 1], "_resolved": 0}]
+    marks = {0: {2: 0}}  # the votes agreed on the first word: that choice stands
+    assert _fallback_marks(ask, marks, broad=True, undecided={"3:4"}) == {0: {2: 0, 5: 2}, 3: {1: 0}}
+    assert _fallback_marks(ask, marks, broad=False, undecided={"3:4"}) == {0: {2: 0}}
+
+
+def test_resolve_homographs_both_leaves_word_unmarked(monkeypatch):
+    import json as _json
+
+    from uadub import stress, translate
+
+    class FakeFinder:
+        def __init__(self, broad=False):
+            pass
+
+        def find(self, text):
+            return [{"n": 1, "word": "руки", "options": [0, 1], "resolved": 0}] if "руки" in text else []
+
+    monkeypatch.setattr(stress, "HomographFinder", FakeFinder)
+
+    def llm(answer):
+        class FakeLLM:
+            def chat(self, system, user, *, max_tokens=4096, temperature=0.3):
+                ids = [i["id"] for i in _json.loads(user)["items"]]
+                return _json.dumps({"items": [{"id": i, "answer": answer} for i in ids]})
+        return FakeLLM()
+
+    units = [{"id": 1, "uk": "немає руки"}]
+    translate.resolve_homographs(llm("both"), units, broad=True, log=lambda *_: None)
+    assert "́" not in units[0].get("tts", "")
+    units = [{"id": 1, "uk": "немає руки"}]
+    translate.resolve_homographs(llm("хм"), units, broad=True, log=lambda *_: None)  # no usable answer
+    assert units[0]["tts"] == "немає ру́ки"  # the dictionary's grammar pick, not the first variant
+
+
+def test_anglicism_pass_rejects_rewrites_that_lose_facts_or_balloon():
+    """A de-anglicised rewrite must keep the facts and stay within reach of the budget (B14)."""
+    import json as _json
+
+    from uadub.translate import _dictionary_lookup, fix_anglicisms
+
+    if _dictionary_lookup() is None:
+        return  # dictionary not installed
+
+    def llm(uk):
+        class FakeLLM:
+            def chat(self, system, user, *, max_tokens=4096, temperature=0.3):
+                ids = [l["id"] for l in _json.loads(user)["lines"]]
+                return _json.dumps({"lines": [{"id": i, "uk": uk} for i in ids]})
+        return FakeLLM()
+
+    def unit():
+        return [{"id": 1, "text": "Click «Save» in the app.", "uk": "Клікніть «Save» в апці.", "max_syl": 10}]
+
+    units = unit()
+    assert fix_anglicisms(llm("Натисніть у застосунку."), units, log=lambda *_: None) == 0  # label lost
+    assert units[0]["uk"] == "Клікніть «Save» в апці."
+    units = unit()
+    long = "Натисніть кнопку «Save», яка розташована у верхньому правому куті вікна застосунку на панелі."
+    assert fix_anglicisms(llm(long), units, log=lambda *_: None) == 0  # three times the budget
+    assert units[0]["uk"] == "Клікніть «Save» в апці."
+    units = unit()
+    assert fix_anglicisms(llm("Натисніть «Save» у застосунку."), units, log=lambda *_: None) == 1
+    assert units[0]["uk"] == "Натисніть «Save» у застосунку."

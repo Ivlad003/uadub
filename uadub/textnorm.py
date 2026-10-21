@@ -139,7 +139,7 @@ _CURRENCY = [
     (re.compile(r"£\s*(\d[\d.,]*)"), r"\1 фунтів"),
     (re.compile(r"(\d[\d.,]*)\s*(?:грн|₴)"), r"\1 гривень"),
 ]
-_NUMBER = re.compile(r"(?<![\w])(\d+(?:[.,]\d+)?)(\s*%)?")
+_NUMBER = re.compile(r"(?<!\d)(\d+(?:[.,]\d+)?)(\s*%)?")  # «M1», «H100»: a digit after a letter is still a number
 _SYMBOLS = {
     "&": " і ", "=": " дорівнює ", "№": " номер ", "@": " ет ",
     "%": " відсотків ", "°": " градусів ",
@@ -178,7 +178,10 @@ def _number_words(m: re.Match) -> str:
         return m.group(0)
     if m.group(2):
         words += " відсотків"
-    return words
+    s = m.string
+    lead = " " if m.start() and s[m.start() - 1].isalpha() else ""  # «M1» → «M один»
+    tail = " " if m.end() < len(s) and s[m.end()].isalpha() else ""  # «3D» → «три D»
+    return lead + words + tail
 
 
 def to_speech_text(text: str) -> str:

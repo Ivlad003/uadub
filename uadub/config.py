@@ -19,6 +19,11 @@ LANGS = {
     "de": ("німецьку", "German"), "it": ("італійську", "Italian"), "pl": ("польську", "Polish"),
     "pt": ("португальську", "Portuguese"), "tr": ("турецьку", "Turkish"), "uk": ("українську", "Ukrainian"),
 }
+# ISO 639-2 tags for the original audio track in the output container
+LANG_TAGS = {
+    "en": "eng", "ko": "kor", "ja": "jpn", "zh": "zho", "es": "spa", "fr": "fra", "de": "deu", "it": "ita",
+    "pl": "pol", "pt": "por", "tr": "tur", "uk": "ukr",
+}
 DEFAULT_SEP_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"  # best quality, ~1x real time
 FAST_SEP_MODEL = "htdemucs.yaml"  # ~3x faster, a bit more bleed
 OMNI_MODEL = "k2-fsa/OmniVoice"
@@ -195,8 +200,10 @@ class Options:
                 fp["emotion"] = self.emotion  # only when on, so existing runs keep their cache
         if stage == "mix":
             fp["version"] = 4  # pauses mirror the speaker's (ADR-033)
+        if stage == "mux" and self.source_lang != "en":
+            fp["source_lang"] = self.source_lang  # the original track's language tag; English caches stay valid
         if stage == "translate":
-            fp["version"] = 19  # bump when prompts/budgets change → old runs re-translate
+            fp["version"] = 20  # bump when prompts/budgets change → old runs re-translate (20: ADR-036 fixes)
             if self.pace != 5.6:
                 fp["pace"] = self.pace  # budgets follow the pace (ADR-033)
             fp["engine"] = self.engine

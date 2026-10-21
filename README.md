@@ -156,7 +156,8 @@ uadub video.mp4 --voice st --review-with claude --review            # agent firs
   usual pause afterwards to check its edits.
 - The agent may only edit `review.md` and `stress.txt` in the work folder and run `uadub --stress-lookup`.
 - Running the same command again does not repeat the review. A different harness or model, a new
-  translation, or `--redo review` runs it again.
+  translation, or `--redo review` runs it again. An agent that failed or was not installed does not
+  count as a review: the next run tries again.
 - Any other tool works as a custom command: `--review-with "my-agent --flag {prompt}"`.
 - To always use an agent, set it once: `export UADUB_REVIEW_WITH=claude:sonnet`.
 

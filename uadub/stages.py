@@ -531,7 +531,8 @@ def stage_mux(opt: Options) -> None:
     w = opt.work
     out = Path(opt.output)
     srt = w / "uk.srt"
-    A.mux(Path(opt.input), w / "mix.wav", out, srt=srt if srt.exists() else None, keep_original=opt.keep_original)
+    A.mux(Path(opt.input), w / "mix.wav", out, srt=srt if srt.exists() else None, keep_original=opt.keep_original,
+          lang=opt.source_lang)
     if srt.exists():
         shutil.copyfile(srt, out.with_suffix(".srt"))
 
@@ -547,7 +548,7 @@ def _part_output(opt: Options) -> None:
     A.write_flac(w / "dub.flac", A.fit_length(y, round(length * sr)), sr)
     out.parent.mkdir(parents=True, exist_ok=True)
     A.mux(Path(opt.input), w / "dub.flac", out, srt=srt if srt.exists() else None,
-          keep_original=opt.keep_original, clip=(opt.clip_start, length))
+          keep_original=opt.keep_original, clip=(opt.clip_start, length), lang=opt.source_lang)
     if srt.exists():
         shutil.copyfile(srt, out.with_suffix(".srt"))
     log(f"   • превʼю: {out}")

@@ -592,6 +592,68 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
   the test clip. The LLM makes more stress choices per video (a few seconds). Roundtrip CER on the
   Ukrainian words is unchanged; the ASR's spelling of «LM Studio» still dominates the raw number.
 
+### ADR-035: Review state follows the translation run; LLM replies are validated in one place
+- **Context:** A full code review (2026-10-21) found four ways a run could silently go wrong or die:
+  after `--redo translate` (or `--redo asr`) the translate fingerprint is unchanged, so
+  `state.review_export` still matched it and `import_review` overwrote the *new* translation with the
+  old `review.md`; a well-formed JSON reply of the wrong shape (`{"lines": null}`, a list of strings,
+  one object instead of an array, a non-string `uk`) raised in every editing pass; a transport error
+  (`TimeoutExpired` from an agent CLI, `OSError`/`HTTPError` from Ollama) escaped `_ask`, which only
+  caught `ValueError`; and a brief whose `glossary` was not a list of dicts crashed the stage.
+- **Decision:**
+  - `run_pipeline` drops `review_export` and `agent_review` from `state.json` whenever the translate
+    stage is popped, so a rerun of translate is a new translation: an existing `review.md` is
+    reported as stale and not applied, and the next `--review` re-exports it (the old file is kept
+    as `review.old.md`). A rerun of the agent review follows the same rule.
+  - `translate._reply_items(data, key)` is the only reader of the list an LLM reply holds under
+    `lines`/`items`: it drops anything that is not a dict and removes `uk`/`tts` fields that are not
+    strings. All seven passes go through it.
+  - `_ask` treats an exception from the backend like bad JSON: it is retried with the next
+    temperature and reported as `RuntimeError` after the last attempt, except a timeout, which is
+    reported at once (a second 900 s wait would most likely time out too).
+  - The brief's `glossary` is filtered to dict entries, like `idioms`, `asr_fixes` and `characters`.
+- **Consequences:** `--redo translate` works with a `review.md` in the folder. No fingerprint
+  changes: valid replies produce the same output as before. Unit tests cover each case.
+
+### ADR-036: Ten medium defects from the 2026-10-21 review
+- **Context:** The same review found defects that did not stop a run but produced a wrong result or
+  a wrong promise: the offline switch (ADR-022) never engaged for `st`, because `_hf_cached` looked
+  for `config.json` and the StyleTTS2 repository ships `config.yml`; a review agent that failed or
+  was not installed was recorded as a successful review; `unify_pronunciations` (ADR-031) replaced a
+  declined form («на ґітхабі») with the nominative; a digit glued to a letter («M1», «H100») was
+  never spoken, and the acronym branch of unify wrote that into every line; `_clean_tts` discarded
+  a `tts` with the modifier apostrophe ʼ (U+02BC) and accepted Russian letters; a `UK:`/`TTS:` value
+  wrapped onto a second line in `review.md` was cut at the first line; an mp3 with cover art counted
+  as a video and was muxed into a one-frame `.mkv`; the kept original track was always tagged
+  `eng` / "English (original)"; unsettled homographs took the dictionary's first variant instead of
+  the grammar-resolved one, and «both» still marked the word for `st`; and the anglicism pass
+  accepted any rewrite after the length passes had run.
+- **Decision:**
+  - `_hf_cached` checks for a non-empty snapshot directory of the repository, whatever its files are called.
+  - `review.run_agent` returns whether the agent ran and exited 0; `agent_review` is recorded only
+    then, so the next run tries again (console says so).
+  - `unify_pronunciations` treats a spelling that is the canonical one plus up to three letters of
+    an ending (or vice versa) as the same name and leaves it alone.
+  - `textnorm._NUMBER` only refuses a digit preceded by a digit; a number glued to letters gets a
+    space on each side («M1 Pro» → «ем один Про», «H100» → «ейч сто»).
+  - `_clean_tts` keeps `'`, `’`, `ʼ` and rejects a `tts` with `ё ы э ъ`.
+  - `parse_review` joins the lines that follow a `UK:`/`TTS:` key up to the next key or a blank line.
+  - `audio.streams(info, kind)` drops attached pictures; `has_stream` and `mux` use it, so an mp3
+    with cover art is audio-only (`.m4a`, no video map).
+  - `mux(..., lang=)` tags the original track with the source language (`config.LANG_TAGS`, ISO 639-2,
+    `und` otherwise) and titles it "<Language> (original)". `source_lang` enters the mux fingerprint
+    only when it is not `en`, so English caches stay valid.
+  - `HomographFinder.find`'s `resolved` index travels with each question; `_fallback_marks` uses it
+    before the first variant, and a word the LLM answered «both» for (in either vote) is left unmarked.
+  - `fix_anglicisms` rejects a rewrite that `lost_facts` flags, or that is longer than the line and
+    over `ANGLICISM_CEILING` (1.3) × the budget.
+  - Translate version 20 (unify, `_clean_tts`, homograph marks and the anglicism rule change what
+    the stage writes); tts, mix and mux follow by the cascade.
+- **Consequences:** Offline runs with `st` make no network requests; a failed agent review is visible
+  and retried; names keep their case endings; numbers in product names are spoken; Korean and other
+  sources get the right track language; podcasts with cover art come out as `.m4a`. One re-translation
+  of existing work folders.
+
 ---
 
 ## 5. Rejected or deferred alternatives
@@ -622,7 +684,7 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
 | StyleTTS2 voice scan | 30/31 voices CER 0.000 on a test sentence |
 | Korean `duo` / `duo:st --emotion` | CER 0.023 / 0.011; pitch gender 16/16 |
 | `--emotion` pitch range | 4.6 → 6.7 semitones (original 6.9) |
-| Unit tests | 26 passing (`tests/test_logic.py`) |
+| Unit tests | 113 passing (`tests/test_logic.py`) |
 
 Tools: `tests/roundtrip.py` (intelligibility), `tests/pace.py` (syl/s), and sample generators for EN/KO.
 

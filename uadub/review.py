@@ -421,18 +421,29 @@ def export_review(work: Path) -> Path:
 
 
 _BLOCK = re.compile(r"^##\s+(\d+)\b", re.M)
+_KEY = re.compile(r"^([A-ZА-ЯІЇЄҐ]{2,10}):")  # EN: / UK: / TTS: / НАГОЛОСИ:
 
 
 def parse_review(text: str) -> dict[int, dict]:
+    """{id: {"uk": …, "tts": …}} from review.md. A value wrapped onto the following lines (an editor
+    or an agent breaking a long line) is joined back; a blank line ends it."""
     items: dict[int, dict] = {}
     marks = list(_BLOCK.finditer(text))
     for k, m in enumerate(marks):
         body = text[m.end() : marks[k + 1].start() if k + 1 < len(marks) else len(text)]
-        item = {}
+        item: dict[str, str] = {}
+        current: str | None = None
         for line in body.splitlines():
-            for key in ("UK", "TTS"):
-                if line.startswith(f"{key}:"):
-                    item[key.lower()] = line[len(key) + 1 :].strip()
+            km = _KEY.match(line)
+            if km:
+                key = km.group(1).lower()
+                current = key if key in ("uk", "tts") else None
+                if current:
+                    item[current] = line[km.end():].strip()
+            elif current and line.strip() and not line.startswith("#"):
+                item[current] = (item[current] + " " + line.strip()).strip()
+            else:
+                current = None
         if "uk" in item:
             items[int(m.group(1))] = item
     return items
@@ -480,13 +491,20 @@ def review_hash(work: Path) -> str:
     return h.hexdigest()[:12]
 
 
-def run_agent(spec: str, work: Path) -> None:
+def run_agent(spec: str, work: Path) -> bool:
+    """Run the review agent in the work folder. True only when it ran and exited cleanly."""
     prompt = agent_prompt(_engine(work), review_domain(work))
     cmd = agent_command(spec, prompt)
     model = spec.partition(":")[2] if spec.partition(":")[0] in AGENT_COMMANDS else ""
     print(f"   • перевірка сценарію агентом: {cmd[0]}{f' (модель {model})' if model else ''} — у папці {work}",
           flush=True)
     try:
-        subprocess.run(cmd, cwd=work, check=False)
+        r = subprocess.run(cmd, cwd=work, check=False)
     except FileNotFoundError:
         print(f"   ! не знайдено команду «{cmd[0]}» — пропускаю автоматичну перевірку", flush=True)
+        return False
+    if r.returncode != 0:
+        print(f"   ! агент {cmd[0]} завершився з кодом {r.returncode} — перевірку не зараховано, "
+              f"наступний запуск спробує знову", flush=True)
+        return False
+    return True

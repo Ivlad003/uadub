@@ -36,8 +36,14 @@ def duration(path: str | Path) -> float:
     return float(probe(path)["format"]["duration"])
 
 
+def streams(info: dict, kind: str) -> list[dict]:
+    """Streams of a kind. Cover art (an attached picture in an mp3/m4a) is not a video track."""
+    return [s for s in info.get("streams", []) if s.get("codec_type") == kind
+            and not (kind == "video" and (s.get("disposition") or {}).get("attached_pic"))]
+
+
 def has_stream(path: str | Path, kind: str) -> bool:
-    return any(s.get("codec_type") == kind for s in probe(path).get("streams", []))
+    return bool(streams(probe(path), kind))
 
 
 _DECODE_ERROR = "Error submitting packet to decoder"
@@ -371,12 +377,13 @@ def video_bitrate(info: dict) -> int | None:
 
 
 def mux(video: Path, audio_wav: Path, out: Path, *, srt: Path | None, keep_original: bool,
-        clip: tuple[float, float] | None = None) -> None:
+        clip: tuple[float, float] | None = None, lang: str = "en") -> None:
     """clip=(start, length): only that range of `video` (a part preview); the video is re-encoded so it
-    starts exactly at `start` rather than at the previous keyframe."""
+    starts exactly at `start` rather than at the previous keyframe. lang: the original track's language."""
+    from .config import LANG_TAGS, LANGS
+
     info = probe(video)
-    kinds = {s.get("codec_type") for s in info.get("streams", [])}
-    has_video, has_audio = "video" in kinds, "audio" in kinds
+    has_video, has_audio = bool(streams(info, "video")), bool(streams(info, "audio"))
     if srt and srt.stat().st_size == 0:  # a part with no speech — ffmpeg can't open an empty .srt
         srt = None
     sub_codec = "mov_text" if out.suffix.lower() in {".mp4", ".m4v", ".mov", ".m4a"} else "srt"
@@ -396,7 +403,8 @@ def mux(video: Path, audio_wav: Path, out: Path, *, srt: Path | None, keep_origi
             "-metadata:s:a:0", "language=ukr", "-metadata:s:a:0", "title=Українська (AI)",
             "-disposition:a:0", "default"]
     if keep:
-        cmd += ["-metadata:s:a:1", "language=eng", "-metadata:s:a:1", "title=English (original)",
+        cmd += ["-metadata:s:a:1", f"language={LANG_TAGS.get(lang, 'und')}",
+                "-metadata:s:a:1", f"title={LANGS.get(lang, (None, lang))[1]} (original)",
                 "-disposition:a:1", "0"]
     if srt:
         cmd += ["-metadata:s:s:0", "language=ukr", "-metadata:s:s:0", "title=Українські субтитри",

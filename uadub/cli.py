@@ -122,8 +122,7 @@ def _review_pause(opt: Options, state: dict, state_path: Path, review: bool, rev
         if done.get("spec") == review_with and done.get("translate") == state.get("translate") and not force_agent:
             print(f"   • сценарій уже перевірено агентом ({review_with}) — пропускаю "
                   f"(ще раз: --redo review)", flush=True)
-        else:
-            run_agent(review_with, w)
+        elif run_agent(review_with, w):  # a failed or missing agent reviewed nothing: try again next run
             state["agent_review"] = {"spec": review_with, "translate": state.get("translate")}
             _save_state(state_path, state)
     if not review:
@@ -235,6 +234,9 @@ def run_pipeline(opt: Options, *, redo: str | None = None, stop_after: str | Non
         dirty = True
         for s in STAGES[STAGES.index(stage):]:
             state.pop(s, None)
+        if "translate" not in state:  # a new translation: the review of the old one no longer applies
+            state.pop("review_export", None)
+            state.pop("agent_review", None)
         state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2))
         print(f"{prefix}[{i}/{len(STAGES)}] {titles[stage]}…", flush=True)
         t0 = time.time()
@@ -275,11 +277,15 @@ def _print_texts(opt: Options, enabled: bool) -> None:
         print(f"     {label + ':':<19}{link(path)}")
 
 
-def _hf_cached(repo: str) -> bool:
+def _hf_cached(repo: str, cache: Path | None = None) -> bool:
+    """A snapshot of `repo` sits in the Hub cache, whatever its files are called (StyleTTS2 ships config.yml)."""
     try:
-        from huggingface_hub import try_to_load_from_cache
+        if cache is None:
+            from huggingface_hub.constants import HF_HUB_CACHE
 
-        return isinstance(try_to_load_from_cache(repo, "config.json"), str)
+            cache = Path(HF_HUB_CACHE)
+        snaps = cache / f"models--{repo.replace('/', '--')}" / "snapshots"
+        return snaps.is_dir() and any(p.is_dir() and any(p.iterdir()) for p in snaps.iterdir())
     except Exception:
         return False
 
