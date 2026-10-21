@@ -12,9 +12,9 @@ function Run($What, [string[]]$Cmd) {
   if ($LASTEXITCODE -ne 0) { throw "крок «$What» завершився з кодом $LASTEXITCODE" }
 }
 
-# Reload PATH from the registry so tools installed by winget are visible in this session.
+# Add the registry PATH (Machine + User) to the current session PATH, so tools installed by winget are visible.
 function Refresh-Path {
-  $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+  $env:Path = $env:Path + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
 }
 
 function Ollama-Up {
@@ -52,7 +52,10 @@ try {
       throw "Потрібен winget (App Installer з Microsoft Store)"
     }
     Write-Host "ffmpeg не знайдено. Встановлюю через winget…"
-    Run "winget install ffmpeg" @("winget", "install", "--id", "Gyan.FFmpeg", "-e", "--accept-source-agreements", "--accept-package-agreements")
+    winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "winget повернув код $LASTEXITCODE для Gyan.FFmpeg; якщо програму вже встановлено, це нормально — перевірте у звіті --doctor нижче"
+    }
     Refresh-Path
     if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
       Write-Host "Відкрийте новий термінал після встановлення, щоб ffmpeg з'явився в PATH."
@@ -64,7 +67,10 @@ try {
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
       throw "Потрібен winget (App Installer з Microsoft Store)"
     }
-    Run "winget install ollama" @("winget", "install", "--id", "Ollama.Ollama", "-e", "--accept-source-agreements", "--accept-package-agreements")
+    winget install --id Ollama.Ollama -e --accept-source-agreements --accept-package-agreements
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "winget повернув код $LASTEXITCODE для Ollama.Ollama; якщо програму вже встановлено, це нормально — перевірте у звіті --doctor нижче"
+    }
     $env:Path = "$env:LOCALAPPDATA\Programs\Ollama;$env:Path"
     Refresh-Path
   }

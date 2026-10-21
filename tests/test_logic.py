@@ -2365,5 +2365,6 @@ def test_install_scripts_exist_and_parse():
     text = ps1.read_text(encoding="utf-8-sig")
     assert "uv tool install" in text and "ollama" in text.lower() and "--doctor" in text
     assert "LASTEXITCODE" in text and "Git.Git" in text
+    assert "$env:Path + " in text  # Refresh-Path keeps the session PATH
     if shutil.which("pwsh"):
         assert subprocess.run(["pwsh", "-NoProfile", "-Command", f"[void][scriptblock]::Create((Get-Content -Raw '{ps1}'))"]).returncode == 0
