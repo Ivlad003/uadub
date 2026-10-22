@@ -4,7 +4,7 @@
 
 Одна команда: на вході відео англійською (корейською, японською…), на виході те саме відео з
 українською озвучкою. Оригінальна музика й фон зберігаються, додаються українські субтитри.
-Усе працює **офлайн на Mac з Apple Silicon** (перевірено на MacBook Pro M1 Pro, 32 ГБ).
+Усе працює **офлайн на Mac з Apple Silicon або на ПК з Linux/Windows і NVIDIA** (перевірено на MacBook Pro M1 Pro, 32 ГБ; шлях для ПК описано в розділі [Linux і Windows з NVIDIA](#linux-і-windows-з-nvidia)).
 
 ```bash
 uadub lecture.mp4 --voice st          # → lecture.uk.mp4 + lecture.uk.srt
@@ -13,6 +13,7 @@ uadub lecture.mp4 --voice st          # → lecture.uk.mp4 + lecture.uk.srt
 ## Зміст
 
 - [Встановлення](#встановлення)
+- [Linux і Windows з NVIDIA](#linux-і-windows-з-nvidia)
 - [Швидкий старт](#швидкий-старт)
 - [Вибір голосу](#вибір-голосу)
 - [Перевірка сценарію перед озвученням (`--review`)](#перевірка-сценарію-перед-озвученням---review)
@@ -32,13 +33,43 @@ uadub lecture.mp4 --voice st          # → lecture.uk.mp4 + lecture.uk.srt
 ```bash
 brew install ffmpeg
 git clone <цей репозиторій> ~/Documents/pet_project/uadub && cd ~/Documents/pet_project/uadub
-uv venv --python 3.12 && uv pip install -e .
+uv venv --python 3.12 && uv pip install -e ".[mac,cpu,dev]"
 ln -sf "$PWD/.venv/bin/uadub" ~/.local/bin/uadub     # щоб `uadub` працював з будь-якої папки
 uadub --prefetch --all                               # один раз завантажити всі моделі (~25 ГБ)
 ```
 
 Після завантаження мережа більше не потрібна. Коли всі моделі в кеші, uadub сам вмикає
 `HF_HUB_OFFLINE=1`. Потрібні Python 3.12, macOS 14+ і близько 25 ГБ місця під моделі.
+
+Щоб поставити інструмент без клонування репозиторію: `uv tool install "uadub[mac]"`. Додаток `[mac]`
+містить пакети MLX і ONNX Runtime для CPU, потрібний розділювачу голосу й фону; звичайний `uadub` їх більше не тягне.
+
+## Linux і Windows з NVIDIA
+
+uadub працює і на ПК з відеокартою NVIDIA (від 8 ГБ відеопам'яті). Усе ставиться однією командою:
+
+```bash
+# Linux
+curl -LsSf https://raw.githubusercontent.com/Ivlad003/uadub/main/install.sh | bash
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/Ivlad003/uadub/main/install.ps1 | iex
+```
+
+Скрипт ставить uv, `uadub[cuda]`, Ollama та моделі, а потім запускає `uadub --doctor`. На цих
+платформах розпізнавання мовлення виконує Parakeet v3 через ONNX Runtime (англійська) і Whisper
+large-v3-turbo через CTranslate2 (інші мови); перекладач — локальна модель Ollama, яку вибрано за
+пам'яттю вашої картки:
+
+| Відеопам'ять | Перекладач |
+|---|---|
+| менше 18 ГБ | `ollama:gemma3:12b` |
+| 18 ГБ і більше | `ollama:gemma4:26b-a4b` |
+
+`--llm ollama:<модель>` або `UADUB_LLM` змінюють вибір; `--llm claude:…` — швидка хмарна альтернатива.
+`uadub --doctor` показує, що встановлено і чого бракує; вставте його вивід, коли просите допомоги.
+Без картки NVIDIA така сама установка працює з `uadub[cpu]` (повільно). Що перевірено: Mac — увесь
+конвеєр; Linux — скрипт установки та CPU-бекенди перевірено на Mac, запуски на CUDA ще попереду;
+Windows — перевіряють користувачі. Відомі обмеження: картки AMD і Mac з Intel не підтримуються.
 
 ## Швидкий старт
 
@@ -401,6 +432,8 @@ uadub talk.mp4 --only audio --voice st          # talk.uk.m4a: дубляж як
 | `--redo STAGE`, `--stop-after STAGE` | примусово переробити етап / зупинитися після нього |
 | `--workdir DIR` | куди класти проміжні файли (за замовчуванням `<назва>.uadub/` поруч із відео) |
 | `--stress-lookup СЛОВО…` | показати варіанти наголосу слова зі словника з граматичними ознаками й запис із вашого `stress.txt` |
+| `--asr-backend auto\|mlx\|onnx\|ctranslate` | бекенд розпізнавання мовлення; auto бере MLX на Apple Silicon, інакше onnx для англійської та ctranslate для інших мов |
+| `--doctor` | показати машину, бекенди й чого бракує |
 | `--prefetch [--all]`, `--list-voices` | завантажити моделі; показати голоси |
 
 ## Як це працює

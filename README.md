@@ -4,7 +4,7 @@
 
 One command: an English (or Korean, Japanese, …) video goes in, the same video comes out with a
 Ukrainian voice track, the original music and background preserved, and Ukrainian subtitles.
-Everything runs **offline on an Apple Silicon Mac** (tested on a MacBook Pro M1 Pro, 32 GB).
+Everything runs **offline on an Apple Silicon Mac or a Linux/Windows PC with NVIDIA** (tested on a MacBook Pro M1 Pro, 32 GB; the PC path is described in [Linux and Windows with NVIDIA](#linux-and-windows-with-nvidia)).
 
 ```bash
 uadub lecture.mp4 --voice st          # → lecture.uk.mp4 + lecture.uk.srt
@@ -13,6 +13,7 @@ uadub lecture.mp4 --voice st          # → lecture.uk.mp4 + lecture.uk.srt
 ## Contents
 
 - [Install](#install)
+- [Linux and Windows with NVIDIA](#linux-and-windows-with-nvidia)
 - [Quick start](#quick-start)
 - [Choosing a voice](#choosing-a-voice)
 - [Reviewing the script before voicing (`--review`)](#reviewing-the-script-before-voicing---review)
@@ -32,13 +33,43 @@ uadub lecture.mp4 --voice st          # → lecture.uk.mp4 + lecture.uk.srt
 ```bash
 brew install ffmpeg
 git clone <this repo> ~/Documents/pet_project/uadub && cd ~/Documents/pet_project/uadub
-uv venv --python 3.12 && uv pip install -e .
+uv venv --python 3.12 && uv pip install -e ".[mac,cpu,dev]"
 ln -sf "$PWD/.venv/bin/uadub" ~/.local/bin/uadub     # make `uadub` available everywhere
 uadub --prefetch --all                               # download every model once (~25 GB)
 ```
 
 After the prefetch nothing touches the network: when all models are cached uadub sets
 `HF_HUB_OFFLINE=1` by itself. Python 3.12, macOS 14+, about 25 GB of disk for models.
+
+To install the tool without cloning the repo: `uv tool install "uadub[mac]"`. The `[mac]` extra carries
+the MLX packages and the CPU ONNX Runtime the separator needs; plain `uadub` no longer includes them.
+
+## Linux and Windows with NVIDIA
+
+uadub also runs on a PC with an NVIDIA card (8 GB VRAM or more). One command installs everything:
+
+```bash
+# Linux
+curl -LsSf https://raw.githubusercontent.com/Ivlad003/uadub/main/install.sh | bash
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/Ivlad003/uadub/main/install.ps1 | iex
+```
+
+The script installs uv, `uadub[cuda]`, Ollama and the models, then runs `uadub --doctor`. On these
+platforms speech recognition uses Parakeet v3 through ONNX Runtime (English) and Whisper
+large-v3-turbo through CTranslate2 (other languages); the translator is a local Ollama model chosen
+by your card's memory:
+
+| VRAM | Translator |
+|---|---|
+| under 18 GB | `ollama:gemma3:12b` |
+| 18 GB and more | `ollama:gemma4:26b-a4b` |
+
+`--llm ollama:<model>` or `UADUB_LLM` override it; `--llm claude:…` is the fast cloud alternative.
+`uadub --doctor` prints what is installed and what is missing; paste its output when asking for help.
+Without an NVIDIA card the same install works with `uadub[cpu]` (slow). What is verified: Mac: full
+pipeline; Linux: install script and CPU backends verified on the Mac, CUDA runs pending; Windows: by
+users. Known limits: AMD cards and Intel Macs are not supported.
 
 ## Quick start
 
@@ -384,6 +415,8 @@ Ukrainian subtitles can simply be voiced with `--subs drama.uk.srt --subs-lang u
 | `--redo STAGE`, `--stop-after STAGE` | force a stage again / stop after it |
 | `--workdir DIR` | where intermediate files go (default `<name>.uadub/` next to the video) |
 | `--stress-lookup WORD…` | show a word's stress variants from the dictionary, with grammar, and your `stress.txt` entry |
+| `--asr-backend auto\|mlx\|onnx\|ctranslate` | speech recognition backend; auto picks MLX on Apple Silicon, otherwise onnx for English and ctranslate for other languages |
+| `--doctor` | print the machine, backends and what is missing |
 | `--prefetch [--all]`, `--list-voices` | download models; list voices |
 
 ## How it works

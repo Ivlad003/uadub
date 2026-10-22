@@ -81,14 +81,17 @@ subtitles are embedded. By default everything runs offline on the user's MacBook
 
 ### 2.3 Hardware requirements
 
-| | Everything local (default) | Translation in the cloud (`--llm claude:…`) |
-|---|---|---|
-| Chip | Apple Silicon (M1+), because MLX is required | Apple Silicon (M1+), because ASR stays on MLX |
-| RAM | 32 GB comfortable; 16 GB with a smaller LLM | 16 GB comfortable; 8 GB likely tight (untested) |
-| Disk for models | ~25 GB | ~10 GB |
-| Network | First download only | Every translation run |
+| | Apple Silicon Mac | Linux + NVIDIA | Windows + NVIDIA |
+|---|---|---|---|
+| ASR | parakeet-mlx / mlx-whisper | onnx-asr (CUDA) / faster-whisper | same as Linux |
+| LLM | mlx-lm Gemma 4 26B-A4B | Ollama gemma3:12b (< 18 GB VRAM) / gemma4:26b-a4b (18 GB and more) | same |
+| TTS, separation | PyTorch MPS | PyTorch CUDA | PyTorch CUDA |
+| RAM / VRAM | 32 GB comfortable | 8 GB VRAM minimum (12B spills to RAM), 24 GB for the 26B-A4B | same |
+| Disk for models | ~25 GB | ~20 GB (+ Ollama model) | same |
+| Verified | yes | install script and CPU backends on the Mac; CUDA runs pending (Task 13) | by users |
 
-Intel Macs, Windows and Linux (including CUDA) are not supported in the current version.
+Translation in the cloud (`--llm claude:…`) lowers the memory need on every platform (about 16 GB RAM
+on a Mac). Intel Macs and AMD cards are not supported.
 
 ---
 
@@ -116,7 +119,10 @@ Stages: `extract → separate → asr → translate → tts → mix → mux`.
 | `config.py` | `Options` dataclass, models, voices, per-stage fingerprints |
 | `stages.py` | Implementation of all seven stages, clip fitting, clone windows, `--emotion` styles |
 | `translate.py` | Prompts (brief, translate, shorten, anglicisms, homographs), JSON salvage, syllable budgets |
-| `llm.py` | LLM backends: MLX (default), Ollama, agent CLIs |
+| `llm.py` | LLM backends: MLX (Mac default), Ollama (default elsewhere), agent CLIs |
+| `asr.py` | ASR seam: adapters `mlx`, `onnx`, `ctranslate`; `choose_asr_backend` (ADR-038) |
+| `device.py` | One device choice (`--device`, `UADUB_DEVICE`; cuda → mps → cpu) |
+| `doctor.py` | `uadub --doctor` |
 | `tts.py` | `St2Engine`, `OmniEngine`, `UkrTTSEngine`; stress-text preparation |
 | `stress.py` | Stress dictionaries, homograph finder, ARPAbet, `--stress-lookup` |
 | `review.py` | `review.md` / `AGENTS.md` export and import, agent launcher (`harness:model`) |
@@ -148,7 +154,7 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
 - **Context:** The target is an M1 Pro, and the work must be local and reasonably fast.
 - **Decision:** Use MLX for ASR (parakeet-mlx, mlx-whisper) and the LLM (mlx-lm). PyTorch on MPS runs
   the TTS engines.
-- **Consequences:** Good speed on Mac. No Intel Mac, Windows or Linux/CUDA support; the RTX desktop is not a target.
+- **Consequences:** Good speed on Mac. (Later, ADR-038 added Linux/Windows with NVIDIA behind the same stages; Intel Macs stay unsupported.)
 
 ### ADR-002: One process per heavy stage, with a fingerprint cache
 - **Context:** The LLM (~15 GB), separator, ASR and TTS cannot all stay resident in 32 GB.
@@ -687,6 +693,64 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
 
 ---
 
+### ADR-038: Linux and Windows with NVIDIA
+- **Context:** Friends and the community want to dub on PCs with an NVIDIA card, not only on an Apple
+  Silicon Mac. The pipeline was MLX-only (ADR-001). The author has no CUDA machine, so the port had
+  to keep the Mac path unchanged, be testable on the Mac through CPU backends, and be verified on a
+  rented GPU afterwards.
+- **Decision:**
+  - ASR seam `uadub/asr.py` with three adapters: `mlx` (parakeet-mlx / mlx-whisper, unchanged),
+    `onnx` (onnx-asr, `nemo-parakeet-tdt-0.6b-v3`; its files are copied to `~/.cache/uadub/onnx`
+    because onnxruntime refuses the symlinked Hugging Face cache) and `ctranslate` (faster-whisper
+    `large-v3-turbo`). `choose_asr_backend`: auto gives `mlx` on Apple Silicon with MLX installed,
+    otherwise `onnx` for English and `ctranslate` for other languages. `--asr-backend` overrides it.
+    `asr_backend` enters the asr fingerprint only when it is not `mlx`, so Mac caches survive.
+  - `device.py`: one choice for PyTorch stages (`--device`, `UADUB_DEVICE`; cuda, then mps, then cpu).
+    ukrainian-tts stays on CPU on Macs.
+  - LLM: Ollama is the default off the Mac. `OLLAMA_SMALL = gemma3:12b` under 18 GB of VRAM,
+    `OLLAMA_LARGE = gemma4:26b-a4b` (the Gemma 4 26B-A4B the Mac uses) from 18 GB; VRAM comes from
+    `nvidia-smi`. Ollama failures give clear Ukrainian messages.
+  - `uadub --doctor` prints the machine, backends, Ollama and ffmpeg, and what is missing.
+  - Packaging: extras `mac`, `cpu`, `cuda`; MLX packages sit behind
+    `sys_platform == 'darwin' and platform_machine == 'arm64'`; `av<17` with faster-whisper. The
+    PyTorch CUDA index (`cu128`) is set in `[tool.uv.sources]` for dev installs; `install.sh` and
+    `install.ps1` pass `--torch-backend auto|cpu` and `--overrides` (numpy>=2.0) themselves, because
+    `uv tool install` ignores `[tool.uv]`. The scripts install uv, `uadub[cuda]`, Ollama and the
+    models, then run `--doctor`.
+  - Windows: clipboard through `clip`, editor `notepad`, UTF-8 console and `PYTHONUTF8=1` for stage
+    children.
+  - Verification ladder: (1) CPU backends on the Mac (below); (2) the Linux container check
+    `tests/linux_cpu_check.sh`; (3) a rented CUDA GPU (Task 13); (4) Windows by users.
+  - Fingerprints of translate, tts, mix and mux are unchanged.
+- **Measured** (clip `examples/ab/clip.mp4`, English, 2 minutes, Mac M1 Pro, 2026-10-22; ONNX
+  Parakeet on CPU with `UADUB_DEVICE=cpu --device cpu`, translation by Claude `claude-fable-5-1`,
+  `--voice st`):
+
+  | | MLX path (2026-10-21) | ONNX on CPU |
+  |---|---|---|
+  | ASR sentences / words | 32 / 500 | 32 / 499 |
+  | ASR time | cached | 17.1 s (20.6 s in an earlier run) |
+  | Stage times | | extract 0.3 s, separate 122.8 s, asr 17.1 s, translate 296.7 s, tts 87.5 s, mix 1.9 s |
+  | Round-trip CER / WER | 0.040–0.042 / 0.120–0.148 | 0.056 / 0.164 |
+  | Pace median (syl/s), p10–p90 | 5.5–5.6 | 5.6, 5.1–6.3 |
+  | Drawn-out / rushed lines | | 2 / 0 |
+  | Lines stretched in the mix | 0 | 0 |
+
+  The CER is 0.015 above the Mac run, inside the ±0.02 target; the transcripts differ by one word
+  and the translation was a fresh cloud run, so part of the gap is translator variance. Other
+  checks: faster-whisper large-v3-turbo int8 on CPU on the Korean sample
+  (`examples/korean/drama.ko.mp4`) took 24.6 s and gave 13 sentences against 16 with MLX Whisper,
+  the first three sentences and five start times identical. The CoreML execution provider ran out
+  of memory on Parakeet v3 (M1 Pro), so ONNX on the Mac uses CPU. Not measured yet: the Linux
+  container check (`tests/linux_cpu_check.sh`, disk was full) and any CUDA run (Task 13); the CUDA
+  speed and quality numbers are to be added to this ADR after Task 13.
+- **Consequences:** One platform matrix (§2.3). The Mac path is unchanged: same backends, same
+  fingerprints, caches survive. Windows is verified by users, not by us. The pure-logic parts
+  (backend choice, VRAM choice, command building) are unit-tested; backend behaviour is verified
+  by the runs above. AMD cards and Intel Macs remain unsupported.
+
+---
+
 ## 5. Rejected or deferred alternatives
 
 | Alternative | Why not (yet) |
@@ -701,7 +765,6 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
 | Third shortening pass for lines far over budget | Would bump translate (minutes per video); ADR-028 lets such lines spill instead of rushing them, measure first |
 | Online stress dictionaries (goroh, r2u) | Breaks offline; licensing |
 | Lip-sync, multi-speaker diarization | Out of scope for now |
-| CUDA / RTX desktop support | MLX-based pipeline; would need a port |
 
 ---
 
@@ -715,7 +778,7 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
 | StyleTTS2 voice scan | 30/31 voices CER 0.000 on a test sentence |
 | Korean `duo` / `duo:st --emotion` | CER 0.023 / 0.011; pitch gender 16/16 |
 | `--emotion` pitch range | 4.6 → 6.7 semitones (original 6.9) |
-| Unit tests | 113 passing (`tests/test_logic.py`) |
+| Unit tests | 141 passing (`tests/test_logic.py`) |
 
 Tools: `tests/roundtrip.py` (intelligibility), `tests/pace.py` (syl/s), and sample generators for EN/KO.
 
@@ -739,6 +802,8 @@ Tools: `tests/roundtrip.py` (intelligibility), `tests/pace.py` (syl/s), and samp
 | `--part-minutes N`, `--keep-parts` | long videos in parts (ADR-027) |
 | `--no-separate`, `--fast`, `--duck DB`, `--max-speed X`, `--steps N` | audio and pacing |
 | `--drop-original`, `-o`, `--workdir`, `--redo STAGE`, `--stop-after STAGE` | output and pipeline control |
+| `--asr-backend auto\|mlx\|onnx\|ctranslate` | speech recognition backend; auto: MLX on Apple Silicon, otherwise onnx (English) or ctranslate (ADR-038) |
+| `--doctor` | print the machine, backends and what is missing |
 | `--prefetch [--all]`, `--list-voices` | setup |
 
 ---
@@ -749,5 +814,4 @@ Tools: `tests/roundtrip.py` (intelligibility), `tests/pace.py` (syl/s), and samp
 - Some StyleTTS2 lines with brand names run at ~4.2–4.4 syl/s.
 - Decimal numbers in versions ("3.6" → «три шість») could be spoken as «три крапка шість».
 - An agent may edit read-only `НАГОЛОСИ:` lines; this is harmless (ignored) but could be warned about.
-- Possible: speaker diarization for more than two voices, a CUDA port for the RTX desktop, and Higgs
-  TTS emotion control.
+- Possible: speaker diarization for more than two voices, and Higgs TTS emotion control.
