@@ -20,9 +20,11 @@ say "2/6 NVIDIA"
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
   EXTRA=cuda
+  TORCH=auto
 else
   echo "nvidia-smi не знайдено: ставлю CPU-варіант (повільний). Для CUDA встановіть драйвер NVIDIA і запустіть скрипт знову."
   EXTRA=cpu
+  TORCH=cpu
 fi
 
 if ! command -v git >/dev/null 2>&1; then
@@ -31,7 +33,11 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 say "3/6 uadub[$EXTRA]"
-uv tool install --force --python 3.12 "uadub[$EXTRA] @ $REPO"
+# `uv tool install` ignores [tool.uv] override-dependencies in pyproject (styletts2-inference pins numpy<2) and [tool.uv.sources] (torch index).
+OVERRIDES=/tmp/uadub-overrides.txt
+printf 'numpy>=2.0\n' > "$OVERRIDES"
+uv tool install --force --python 3.12 --overrides "$OVERRIDES" --torch-backend "$TORCH" "uadub[$EXTRA] @ $REPO"
+rm -f "$OVERRIDES"
 export PATH="$HOME/.local/bin:$PATH"
 
 say "4/6 ffmpeg"

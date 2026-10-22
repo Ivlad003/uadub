@@ -31,9 +31,11 @@ try {
 
   Say "2/6 NVIDIA"
   $Extra = "cpu"
+  $Torch = "cpu"
   if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
     nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
     $Extra = "cuda"
+    $Torch = "auto"
   } else {
     Write-Host "nvidia-smi не знайдено: ставлю CPU-варіант (повільний). Для CUDA встановіть драйвер NVIDIA і запустіть скрипт знову."
   }
@@ -43,7 +45,10 @@ try {
   }
 
   Say "3/6 uadub[$Extra]"
-  Run "uv tool install" @("uv", "tool", "install", "--force", "--python", "3.12", "uadub[$Extra] @ $Repo")
+  # `uv tool install` ignores [tool.uv] override-dependencies in pyproject (styletts2-inference pins numpy<2) and [tool.uv.sources] (torch index).
+  $Overrides = Join-Path $env:TEMP "uadub-overrides.txt"
+  Set-Content -Path $Overrides -Value "numpy>=2.0" -Encoding ASCII
+  Run "uv tool install" @("uv", "tool", "install", "--force", "--python", "3.12", "--overrides", $Overrides, "--torch-backend", $Torch, "uadub[$Extra] @ $Repo")
   $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
 
   Say "4/6 ffmpeg"

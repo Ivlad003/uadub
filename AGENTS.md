@@ -29,6 +29,7 @@ the parts' audio is concatenated and muxed once over the original video.
 - Models: `uadub --prefetch --all` (~25 GB in `~/.cache/huggingface` and `~/.cache/uadub`).
 - Tests: `.venv/bin/python -m pytest -q tests/test_logic.py`. They are fast and need no models; they
   must pass before you finish.
+- Linux/CUDA port: `install.sh` / `install.ps1` install `uadub[cuda]` or `uadub[cpu]`; `uadub --doctor` checks the setup.
 - Quality checks (need models and a rendered video):
   - `python tests/roundtrip.py <video.uk.mp4> <workdir>` — CER/WER;
   - `python tests/pace.py <workdir>` — syllables per second.
@@ -116,4 +117,5 @@ the parts' audio is concatenated and muxed once over the original video.
 - Relevant fingerprints are bumped.
 - READMEs and `spec.md` are updated.
 - For pipeline changes: one real run on `examples/ab/clip.mp4`, with metrics reported.
+- For install-script or Linux-dependency changes: `bash tests/linux_cpu_check.sh` (needs ~5 GB free in the Docker VM).
 - For part-mode changes (`parts.py`, clip handling, assembly): the long-video check above.
