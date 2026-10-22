@@ -41,7 +41,7 @@ uadub --prefetch --all                               # download every model once
 After the prefetch nothing touches the network: when all models are cached uadub sets
 `HF_HUB_OFFLINE=1` by itself. Python 3.12, macOS 14+, about 25 GB of disk for models.
 
-To install the tool without cloning the repo: `uv tool install "uadub[mac]"`. The `[mac]` extra carries
+To install the tool without cloning the repo: `uv tool install "uadub[mac] @ git+https://github.com/Ivlad003/uadub.git"`. The `[mac]` extra carries
 the MLX packages and the CPU ONNX Runtime the separator needs; plain `uadub` no longer includes them.
 
 ## Linux and Windows with NVIDIA
@@ -54,6 +54,8 @@ curl -LsSf https://raw.githubusercontent.com/Ivlad003/uadub/main/install.sh | ba
 # Windows (PowerShell)
 irm https://raw.githubusercontent.com/Ivlad003/uadub/main/install.ps1 | iex
 ```
+
+The scripts land on `main` with the next release; until then they are on the `cuda-port` branch.
 
 The script installs uv, `uadub[cuda]`, Ollama and the models, then runs `uadub --doctor`. On these
 platforms speech recognition uses Parakeet v3 through ONNX Runtime (English) and Whisper
@@ -68,8 +70,8 @@ by your card's memory:
 `--llm ollama:<model>` or `UADUB_LLM` override it; `--llm claude:…` is the fast cloud alternative.
 `uadub --doctor` prints what is installed and what is missing; paste its output when asking for help.
 Without an NVIDIA card the same install works with `uadub[cpu]` (slow). What is verified: Mac: full
-pipeline; Linux: install script and CPU backends verified on the Mac, CUDA runs pending; Windows: by
-users. Known limits: AMD cards and Intel Macs are not supported.
+pipeline; Linux: the CPU backends (ONNX Parakeet, faster-whisper) are verified on the Mac, while the
+install scripts, the Linux container check and CUDA runs are pending (a rented GPU); Windows: by users. Known limits: AMD cards and Intel Macs are not supported.
 
 ## Quick start
 
@@ -494,6 +496,9 @@ All 31 StyleTTS2 voices transcribed back perfectly on a test sentence.
 
 ```
 uadub/cli.py        CLI, stages in separate processes, state cache, the --review pause
+uadub/asr.py        speech recognition backends: MLX, ONNX Runtime (Parakeet), CTranslate2 (Whisper)
+uadub/device.py     device choice for PyTorch stages (cuda, mps, cpu)
+uadub/doctor.py     `uadub --doctor`: machine, backends, what is missing
 uadub/stages.py     extract → separate → asr → translate → tts → mix → mux
 uadub/parts.py      long videos: cut plan at pauses, part runs, shared brief, joining
 uadub/audio.py      ffmpeg: extraction (salvages damaged tracks), loudness, mux

@@ -41,7 +41,7 @@ uadub --prefetch --all                               # один раз зава�
 Після завантаження мережа більше не потрібна. Коли всі моделі в кеші, uadub сам вмикає
 `HF_HUB_OFFLINE=1`. Потрібні Python 3.12, macOS 14+ і близько 25 ГБ місця під моделі.
 
-Щоб поставити інструмент без клонування репозиторію: `uv tool install "uadub[mac]"`. Додаток `[mac]`
+Щоб поставити інструмент без клонування репозиторію: `uv tool install "uadub[mac] @ git+https://github.com/Ivlad003/uadub.git"`. Додаток `[mac]`
 містить пакети MLX і ONNX Runtime для CPU, потрібний розділювачу голосу й фону; звичайний `uadub` їх більше не тягне.
 
 ## Linux і Windows з NVIDIA
@@ -54,6 +54,8 @@ curl -LsSf https://raw.githubusercontent.com/Ivlad003/uadub/main/install.sh | ba
 # Windows (PowerShell)
 irm https://raw.githubusercontent.com/Ivlad003/uadub/main/install.ps1 | iex
 ```
+
+Скрипти потраплять у `main` з наступним релізом; до того вони лежать у гілці `cuda-port`.
 
 Скрипт ставить uv, `uadub[cuda]`, Ollama та моделі, а потім запускає `uadub --doctor`. На цих
 платформах розпізнавання мовлення виконує Parakeet v3 через ONNX Runtime (англійська) і Whisper
@@ -68,8 +70,9 @@ large-v3-turbo через CTranslate2 (інші мови); перекладач 
 `--llm ollama:<модель>` або `UADUB_LLM` змінюють вибір; `--llm claude:…` — швидка хмарна альтернатива.
 `uadub --doctor` показує, що встановлено і чого бракує; вставте його вивід, коли просите допомоги.
 Без картки NVIDIA така сама установка працює з `uadub[cpu]` (повільно). Що перевірено: Mac — увесь
-конвеєр; Linux — скрипт установки та CPU-бекенди перевірено на Mac, запуски на CUDA ще попереду;
-Windows — перевіряють користувачі. Відомі обмеження: картки AMD і Mac з Intel не підтримуються.
+конвеєр; Linux — CPU-бекенди (ONNX Parakeet, faster-whisper) перевірено на Mac, а скрипти установки,
+перевірка в Linux-контейнері й запуски на CUDA ще попереду (орендована відеокарта); Windows —
+перевіряють користувачі. Відомі обмеження: картки AMD і Mac з Intel не підтримуються.
 
 ## Швидкий старт
 
@@ -512,6 +515,9 @@ uadub talk.mp4 --only audio --voice st          # talk.uk.m4a: дубляж як
 
 ```
 uadub/cli.py        CLI, етапи в окремих процесах, кеш стану, пауза --review
+uadub/asr.py        бекенди розпізнавання мовлення: MLX, ONNX Runtime (Parakeet), CTranslate2 (Whisper)
+uadub/device.py     вибір пристрою для етапів на PyTorch (cuda, mps, cpu)
+uadub/doctor.py     `uadub --doctor`: машина, бекенди, чого бракує
 uadub/stages.py     extract → separate → asr → translate → tts → mix → mux
 uadub/parts.py      довгі відео: план розрізів у паузах, запуск частин, спільний бриф, склеювання
 uadub/audio.py      ffmpeg: витягування звуку (з відновленням пошкодженої доріжки), гучність, mux

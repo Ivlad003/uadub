@@ -86,9 +86,9 @@ subtitles are embedded. By default everything runs offline on the user's MacBook
 | ASR | parakeet-mlx / mlx-whisper | onnx-asr (CUDA) / faster-whisper | same as Linux |
 | LLM | mlx-lm Gemma 4 26B-A4B | Ollama gemma3:12b (< 18 GB VRAM) / gemma4:26b-a4b (18 GB and more) | same |
 | TTS, separation | PyTorch MPS | PyTorch CUDA | PyTorch CUDA |
-| RAM / VRAM | 32 GB comfortable | 8 GB VRAM minimum (12B spills to RAM), 24 GB for the 26B-A4B | same |
-| Disk for models | ~25 GB | ~20 GB (+ Ollama model) | same |
-| Verified | yes | install script and CPU backends on the Mac; CUDA runs pending (Task 13) | by users |
+| RAM / VRAM | 32 GB comfortable | 8 GB VRAM minimum (gemma3:12b), 18 GB and more for gemma4:26b-a4b | same |
+| Disk for models | ~25 GB | ~20 GB plus the Ollama model (8–16 GB) | same |
+| Verified | yes | CPU backends (ONNX Parakeet, faster-whisper) on the Mac; install scripts, Linux container check and CUDA runs pending (Task 13 / a rented GPU) | by users |
 
 Translation in the cloud (`--llm claude:…`) lowers the memory need on every platform (about 16 GB RAM
 on a Mac). Intel Macs and AMD cards are not supported.
@@ -726,14 +726,14 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
   Parakeet on CPU with `UADUB_DEVICE=cpu --device cpu`, translation by Claude `claude-fable-5-1`,
   `--voice st`):
 
-  | | MLX path (2026-10-21) | ONNX on CPU |
+  | | MLX path (two Mac runs, 2026-10-21) | ONNX on CPU |
   |---|---|---|
   | ASR sentences / words | 32 / 500 | 32 / 499 |
-  | ASR time | cached | 17.1 s (20.6 s in an earlier run) |
-  | Stage times | | extract 0.3 s, separate 122.8 s, asr 17.1 s, translate 296.7 s, tts 87.5 s, mix 1.9 s |
-  | Round-trip CER / WER | 0.040–0.042 / 0.120–0.148 | 0.056 / 0.164 |
-  | Pace median (syl/s), p10–p90 | 5.5–5.6 | 5.6, 5.1–6.3 |
-  | Drawn-out / rushed lines | | 2 / 0 |
+  | ASR time | n/a (cached) | 17.1 s (20.6 s in an earlier run) |
+  | Stage times | n/a (not recorded) | extract 0.3 s, separate 122.8 s, asr 17.1 s, translate 296.7 s, tts 87.5 s, mix 1.9 s |
+  | Round-trip CER / WER | 0.040 and 0.042 / 0.120 and 0.148 | 0.056 / 0.164 |
+  | Pace median (syl/s), p10–p90 | 5.5 and 5.6; 5.3–6.3 and 5.2–6.3 | 5.6, 5.1–6.3 |
+  | Drawn-out / rushed lines | n/a (not recorded) | 2 / 0 |
   | Lines stretched in the mix | 0 | 0 |
 
   The CER is 0.015 above the Mac run, inside the ±0.02 target; the transcripts differ by one word
@@ -741,7 +741,7 @@ Format: Context → Decision → Consequences. Status is *Accepted* unless noted
   checks: faster-whisper large-v3-turbo int8 on CPU on the Korean sample
   (`examples/korean/drama.ko.mp4`) took 24.6 s and gave 13 sentences against 16 with MLX Whisper,
   the first three sentences and five start times identical. The CoreML execution provider ran out
-  of memory on Parakeet v3 (M1 Pro), so ONNX on the Mac uses CPU. Not measured yet: the Linux
+  of memory on Parakeet v3 (M1 Pro), so ONNX on the Mac uses CPU. Not measured yet: the install scripts, the Linux
   container check (`tests/linux_cpu_check.sh`, disk was full) and any CUDA run (Task 13); the CUDA
   speed and quality numbers are to be added to this ADR after Task 13.
 - **Consequences:** One platform matrix (§2.3). The Mac path is unchanged: same backends, same
