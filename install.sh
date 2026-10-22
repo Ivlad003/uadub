@@ -34,10 +34,10 @@ fi
 
 say "3/6 uadub[$EXTRA]"
 # `uv tool install` ignores [tool.uv] override-dependencies in pyproject (styletts2-inference pins numpy<2) and [tool.uv.sources] (torch index).
-OVERRIDES=/tmp/uadub-overrides.txt
-printf 'numpy>=2.0\n' > "$OVERRIDES"
-uv tool install --force --python 3.12 --overrides "$OVERRIDES" --torch-backend "$TORCH" "uadub[$EXTRA] @ $REPO"
-rm -f "$OVERRIDES"
+OVR=$(mktemp)
+trap 'rm -f "$OVR"' EXIT
+printf 'numpy>=2.0\n' > "$OVR"
+uv tool install --force --python 3.12 --overrides "$OVR" --torch-backend "$TORCH" "uadub[$EXTRA] @ $REPO"
 export PATH="$HOME/.local/bin:$PATH"
 
 say "4/6 ffmpeg"

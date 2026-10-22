@@ -24,12 +24,15 @@ the parts' audio is concatenated and muxed once over the original video.
 
 ## Environment
 
-- macOS on Apple Silicon only (MLX). Python 3.12, uv-managed venv in `.venv/`.
-- Install: `uv venv --python 3.12 && uv pip install -e .`
+- Platforms: macOS on Apple Silicon (MLX ASR and LLM, PyTorch MPS for TTS); Linux and Windows with
+  NVIDIA (ONNX Runtime / CTranslate2 ASR, Ollama LLM, PyTorch CUDA). Python 3.12, uv-managed venv.
+- Install (dev, Mac): `uv venv --python 3.12 && uv pip install -e ".[mac,cpu,dev]"`; users: `install.sh` / `install.ps1`.
+- No module outside `uadub/asr.py` and `uadub/llm.py` may import `mlx`, `parakeet_mlx`, `mlx_whisper`,
+  `onnx_asr` or `faster_whisper`; every PyTorch engine takes its device from `uadub/device.py`.
 - Models: `uadub --prefetch --all` (~25 GB in `~/.cache/huggingface` and `~/.cache/uadub`).
 - Tests: `.venv/bin/python -m pytest -q tests/test_logic.py`. They are fast and need no models; they
   must pass before you finish.
-- Linux/CUDA port: `install.sh` / `install.ps1` install `uadub[cuda]` or `uadub[cpu]`; `uadub --doctor` checks the setup.
+- `uadub --doctor` prints the machine, the backends and what is missing.
 - Quality checks (need models and a rendered video):
   - `python tests/roundtrip.py <video.uk.mp4> <workdir>` — CER/WER;
   - `python tests/pace.py <workdir>` — syllables per second.
@@ -117,5 +120,5 @@ the parts' audio is concatenated and muxed once over the original video.
 - Relevant fingerprints are bumped.
 - READMEs and `spec.md` are updated.
 - For pipeline changes: one real run on `examples/ab/clip.mp4`, with metrics reported.
-- For install-script or Linux-dependency changes: `bash tests/linux_cpu_check.sh` (needs ~5 GB free in the Docker VM).
+- For backend or packaging changes (asr.py, device.py, llm.py defaults, pyproject.toml, install scripts): tests/linux_cpu_check.sh passes (needs ~5 GB free in the Docker VM).
 - For part-mode changes (`parts.py`, clip handling, assembly): the long-video check above.
