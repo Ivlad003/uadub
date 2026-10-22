@@ -1,4 +1,4 @@
-"""LLM backends: mlx-lm in-process (default), a local Ollama server, or an agent CLI
+"""LLM backends: mlx-lm in-process on Apple Silicon, a local Ollama server elsewhere, or an agent CLI
 (Claude Code, opencode, Codex, Gemini) used as a plain text model."""
 
 from __future__ import annotations
@@ -68,6 +68,17 @@ class OllamaLLM(LLM):
         except urllib.error.URLError as e:
             raise RuntimeError(f"Ollama не відповідає на {self.host} — запустіть «ollama serve» "
                                f"або встановіть Ollama (https://ollama.com): {e.reason}") from None
+
+    def probe(self) -> None:
+        """Fail early with one clear message: the server must answer and have the model."""
+        try:
+            with urllib.request.urlopen(self.host + "/api/tags", timeout=3) as resp:
+                names = [m.get("name", "") for m in json.loads(resp.read()).get("models", [])]
+        except Exception:
+            raise RuntimeError(f"Ollama не відповідає на {self.host} — запустіть «ollama serve» "
+                               f"або встановіть Ollama (https://ollama.com)") from None
+        if self.model not in names and not (":" not in self.model and f"{self.model}:latest" in names):
+            raise RuntimeError(f"У Ollama немає моделі «{self.model}» — виконайте: ollama pull {self.model}")
 
     def chat(self, system: str, user: str, *, max_tokens: int = 4096, temperature: float = 0.3) -> str:
         payload = {

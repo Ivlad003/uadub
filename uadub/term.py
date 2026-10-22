@@ -35,6 +35,15 @@ def shell_cd(path: str | Path) -> str:
     return f"cd {shlex.quote(str(Path(path).expanduser().resolve()))}"
 
 
+def agent_command_line(cwd: str | Path, prompt: str, *, platform: str, agent: str = "claude") -> str:
+    """One pasteable line: go to `cwd` and start the agent with `prompt` (bash/zsh or PowerShell)."""
+    path = str(Path(cwd).expanduser().resolve())
+    if platform == "win32":
+        quoted = '"' + prompt.replace('"', '""').replace("$", "`$") + '"'
+        return f"cd '{path.replace(chr(39), chr(39) * 2)}'; {agent} {quoted}"
+    return f"{shell_cd(path)} && {agent} {shlex.quote(prompt)}"
+
+
 def clipboard_command(platform: str, which=shutil.which) -> list[str] | None:
     """The command that reads stdin into the clipboard on this platform, or None."""
     if platform == "darwin" and which("pbcopy"):
@@ -53,7 +62,9 @@ def copy_to_clipboard(text: str) -> bool:
     if not cmd:
         return False
     try:
-        subprocess.run(cmd, input=text.encode(), check=True)
+        # clip.exe reads UTF-16 (with a BOM); UTF-8 would be taken as the OEM code page → mojibake
+        data = ("\ufeff" + text).encode("utf-16-le") if sys.platform == "win32" else text.encode()
+        subprocess.run(cmd, input=data, check=True)
         return True
     except Exception:
         return False

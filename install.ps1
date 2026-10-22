@@ -90,9 +90,9 @@ try {
 
   Say "6/6 моделі"
   $env:PYTHONUTF8 = "1"
-  Run "uadub --prefetch" @("uadub", "--prefetch")
+  Run "uadub --prefetch --voice st" @("uadub", "--prefetch", "--voice", "st")
   uadub --doctor
 } catch {
   Write-Host "`nВстановлення зупинилось: $($_.Exception.Message)`nВиправте причину вище і запустіть скрипт знову." -ForegroundColor Red
-  exit 1
+  return
 }

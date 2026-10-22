@@ -64,5 +64,5 @@ if ! curl -s http://127.0.0.1:11434/api/tags >/dev/null; then
 fi
 
 say "6/6 моделі"
-uadub --prefetch
+uadub --prefetch --voice st
 uadub --doctor || true

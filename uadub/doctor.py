@@ -81,7 +81,9 @@ def render(info: dict) -> tuple[str, bool]:
                      + (f" · VRAM {info['vram_gb']} ГБ" if info.get("vram_gb") else ""))
         lines.append(f"onnxruntime: {info.get('onnxruntime') or 'немає'} ({', '.join(info.get('ort_providers') or []) or '—'})"
                      f" · ctranslate2: {info.get('ctranslate2') or 'немає'}")
-        if info.get("torch") and not info.get("torch_cuda"):
+        if info.get("platform") == "darwin":
+            problems.append("немає MLX: встановіть uadub з додатком [mac] і MLX-пакетами: uv pip install -e \".[mac,cpu,dev]\"")
+        elif info.get("torch") and not info.get("torch_cuda") and info.get("driver"):
             problems.append("CUDA недоступна для torch: перевірте драйвер NVIDIA (nvidia-smi) і що uadub встановлено з [cuda]")
         if info.get("asr_backend") == "onnx" and not info.get("onnxruntime"):
             problems.append("немає onnxruntime: uv tool install \"uadub[cuda]\"")

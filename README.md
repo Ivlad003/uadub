@@ -41,8 +41,15 @@ uadub --prefetch --all                               # download every model once
 After the prefetch nothing touches the network: when all models are cached uadub sets
 `HF_HUB_OFFLINE=1` by itself. Python 3.12, macOS 14+, about 25 GB of disk for models.
 
-To install the tool without cloning the repo: `uv tool install "uadub[mac] @ git+https://github.com/Ivlad003/uadub.git"`. The `[mac]` extra carries
-the MLX packages and the CPU ONNX Runtime the separator needs; plain `uadub` no longer includes them.
+To install the tool without cloning the repo (`uv tool install` ignores the repo's `[tool.uv]` section, so pass the numpy override yourself):
+
+```bash
+printf 'numpy>=2.0\n' > /tmp/uadub-overrides.txt
+uv tool install --overrides /tmp/uadub-overrides.txt "uadub[mac] @ git+https://github.com/Ivlad003/uadub.git"
+```
+
+The `[mac]` extra carries `audio-separator[cpu]` (the CPU ONNX Runtime the separator needs); the MLX packages come
+from platform markers in the main dependencies.
 
 ## Linux and Windows with NVIDIA
 

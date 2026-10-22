@@ -7,11 +7,12 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from .config import DEFAULT_ASR, WHISPER_ASR
+from .config import CACHE_DIR, DEFAULT_ASR, WHISPER_ASR
 
 BACKENDS = ("mlx", "onnx", "ctranslate")
 ONNX_PARAKEET = "nemo-parakeet-tdt-0.6b-v3"  # onnx-asr model name (English and 24 more languages)
 CT2_WHISPER = "large-v3-turbo"  # faster-whisper model name (other languages)
+CT2_REPOS = {"large-v3-turbo": "Systran/faster-whisper-large-v3-turbo"}  # faster-whisper's Hub repo per short name
 
 
 def has_mlx() -> bool:
@@ -115,7 +116,8 @@ class MissingBackend(RuntimeError):
 def _need(module: str, extra: str) -> None:
     if importlib.util.find_spec(module) is None:
         raise MissingBackend(f"Не встановлено {module}. Поставте uadub з додатком: "
-                             f"uv tool install \"uadub[{extra}]\" (на машині з NVIDIA — uadub[cuda])")
+                             f"uv tool install \"uadub[{extra}]\" (у клоні репозиторію — uv pip install -e \".[{extra}]\"; "
+                             f"на машині з NVIDIA — uadub[cuda])")
 
 
 def tokens_to_sentences(tokens: list[str], timestamps: list[float], *, tail: float = 0.08) -> list[dict]:
@@ -149,7 +151,7 @@ def _onnx_model_dir(model: str, cache: Path | None = None) -> str | None:
     repo = model_repos.get(model)
     if repo is None:
         return None
-    target = (cache or Path.home() / ".cache" / "uadub" / "onnx") / model
+    target = (cache or CACHE_DIR / "onnx") / model
     if all((target / f).is_file() for f in ONNX_FILES):
         return str(target)
     try:
@@ -163,6 +165,7 @@ def _onnx_model_dir(model: str, cache: Path | None = None) -> str | None:
 
 def _onnx_sentences(wav: Path, lang: str | None, model: str, device: str | None) -> list[dict]:
     _need("onnx_asr", "cpu")
+    import torch  # noqa: F401  (loads the cuDNN/cuBLAS libraries the PyTorch wheels ship; onnxruntime reuses them)
     import onnx_asr
     import soundfile as sf
 
@@ -203,5 +206,23 @@ def _ct2_sentences(wav: Path, lang: str | None, model: str, device: str | None) 
     dev = "cuda" if pick(device) == "cuda" else "cpu"
     m = WhisperModel(model, device=dev, compute_type="float16" if dev == "cuda" else "int8")
     segments, _info = m.transcribe(str(wav), language=lang, word_timestamps=True, condition_on_previous_text=False,
-                                   no_speech_threshold=0.6, vad_filter=False)
+                                   no_speech_threshold=0.6, hallucination_silence_threshold=2.0,
+                                   vad_filter=False)
     return words_to_sentences(whisper_words(ct2_segments_to_dicts(segments)))
+
+
+def is_cached(backend: str, model: str, *, hf_cached, cache: Path | None = None) -> bool:
+    """Whether the ASR model sits locally, so the run may switch the Hub off (HF_HUB_OFFLINE)."""
+    if backend == "onnx":
+        target = (cache or CACHE_DIR) / "onnx" / model
+        return all((target / f).is_file() for f in ONNX_FILES)
+    if backend == "ctranslate":
+        return bool(hf_cached(CT2_REPOS.get(model, model)))
+    return bool(hf_cached(model))
+
+
+def prefetch_ct2(model: str) -> None:
+    """Download a faster-whisper model by loading it once on the CPU."""
+    from faster_whisper import WhisperModel
+
+    WhisperModel(model, device="cpu", compute_type="int8")

@@ -41,8 +41,15 @@ uadub --prefetch --all                               # один раз зава�
 Після завантаження мережа більше не потрібна. Коли всі моделі в кеші, uadub сам вмикає
 `HF_HUB_OFFLINE=1`. Потрібні Python 3.12, macOS 14+ і близько 25 ГБ місця під моделі.
 
-Щоб поставити інструмент без клонування репозиторію: `uv tool install "uadub[mac] @ git+https://github.com/Ivlad003/uadub.git"`. Додаток `[mac]`
-містить пакети MLX і ONNX Runtime для CPU, потрібний розділювачу голосу й фону; звичайний `uadub` їх більше не тягне.
+Щоб поставити інструмент без клонування репозиторію (`uv tool install` ігнорує секцію `[tool.uv]` репозиторію, тож перевизначення numpy передайте самі):
+
+```bash
+printf 'numpy>=2.0\n' > /tmp/uadub-overrides.txt
+uv tool install --overrides /tmp/uadub-overrides.txt "uadub[mac] @ git+https://github.com/Ivlad003/uadub.git"
+```
+
+Додаток `[mac]` містить `audio-separator[cpu]` (ONNX Runtime для CPU, потрібний розділювачу голосу й фону); пакети MLX
+приходять із платформних маркерів в основних залежностях.
 
 ## Linux і Windows з NVIDIA
 

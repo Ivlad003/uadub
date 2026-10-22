@@ -103,11 +103,9 @@ class UserStop(SystemExit):
 
 def _review_pause(opt: Options, state: dict, state_path: Path, review: bool, review_with: str | None,
                   force_agent: bool = False) -> None:
-    import shlex
-
     from .review import AGENTS, LOCAL_STRESS, REVIEW, agent_prompt, export_review, review_domain, run_agent
     from .stress import DEFAULT_DICT
-    from .term import copy_to_clipboard, link, open_in_editor, shell_cd
+    from .term import agent_command_line, copy_to_clipboard, link, open_in_editor
 
     w = opt.work
     if not (w / REVIEW).exists() or state.get("review_export") != state.get("translate"):
@@ -130,9 +128,9 @@ def _review_pause(opt: Options, state: dict, state_path: Path, review: bool, rev
         print(f"   • сценарій: {link(w / REVIEW)}", flush=True)
         return
     domain = review_domain(w)
-    prompt = shlex.quote(agent_prompt(opt.engine, domain))
-    claude_cmd = f"{shell_cd(w)} && claude {prompt}"
-    opencode_cmd = f"{shell_cd(w)} && opencode run {prompt}"
+    prompt = agent_prompt(opt.engine, domain)
+    claude_cmd = agent_command_line(w, prompt, platform=sys.platform)
+    opencode_cmd = agent_command_line(w, prompt, platform=sys.platform, agent="opencode run")
     src = opt.text_lang
     pronounce = Path.home() / ".config" / "uadub" / "pronounce.txt"
     print(f"""
@@ -377,14 +375,18 @@ def prefetch(opt: Options, all_engines: bool) -> None:
         _onnx_model_dir(name)  # real files: onnxruntime refuses the symlinks of the HF cache
     for name in plan["ct2_models"]:
         print(f"• {name} (faster-whisper)", flush=True)
-        from faster_whisper import WhisperModel
+        from .asr import prefetch_ct2
 
-        WhisperModel(name, device="cpu", compute_type="int8")
+        prefetch_ct2(name)
     for name in plan["ollama_models"]:
         print(f"• ollama pull {name}", flush=True)
+        import shutil
         import subprocess
 
-        subprocess.run(["ollama", "pull", name], check=False)
+        if shutil.which("ollama"):
+            subprocess.run(["ollama", "pull", name], check=False)
+        else:
+            print(f"   Ollama не встановлено — https://ollama.com; потім: ollama pull {name}", flush=True)
     print("• модель сепарації", opt.sep_model, flush=True)
     from audio_separator.separator import Separator
 
@@ -636,12 +638,14 @@ def main(argv: list[str] | None = None) -> None:
         opt.emotion = 0.0
     from .llm import is_agent_llm, is_local_mlx
 
-    needed = [opt.asr_model] + ([opt.llm] if is_local_mlx(opt.llm) else [])
+    from .asr import is_cached
+
+    needed = ([opt.llm] if is_local_mlx(opt.llm) else [])
     if opt.engine == "omni":
         needed.append(OMNI_MODEL)
     if opt.engine == "st":
         needed.append(ST_MODEL)
-    if all(_hf_cached(r) for r in needed):
+    if is_cached(opt.asr_backend, opt.asr_model, hf_cached=_hf_cached) and all(_hf_cached(r) for r in needed):
         os.environ["HF_HUB_OFFLINE"] = "1"  # everything is local → never touch the network
 
     if is_agent_llm(opt.llm):

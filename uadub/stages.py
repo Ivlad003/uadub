@@ -154,6 +154,12 @@ def stage_translate(opt: Options) -> None:
         return
     log(f"   • модель: {opt.llm}")
     llm = make_llm(opt.llm)
+    if hasattr(llm, "probe"):
+        try:
+            llm.probe()
+        except RuntimeError as e:
+            llm.close()
+            raise SystemExit(f"\n{e}") from None
     try:
         if opt.only == "transcript":  # --only transcript: proofread the original, no translation (ADR-037)
             from .config import LANGS

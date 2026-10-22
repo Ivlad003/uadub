@@ -2330,6 +2330,13 @@ def test_doctor_report_names_problems_and_fixes():
     missing_model = dict(good, ollama_models=["llama3:8b"])
     text, ok = render(missing_model)
     assert not ok and "ollama pull gemma3:27b" in text
+    nomlx = {"platform": "darwin", "machine": "arm64", "mlx": False, "torch": None, "torch_cuda": False,
+             "asr_backend": "onnx", "llm": "ollama:gemma3:12b", "ffmpeg": "/opt/homebrew/bin/ffmpeg"}
+    text, ok = render(nomlx)
+    assert not ok and "[mac,cpu,dev]" in text and "драйвер" not in text.split("Що виправити")[1]
+    nogpu = dict(good, torch_cuda=False, driver=None, vram_gb=None)
+    text, ok = render(nogpu)
+    assert ok and "CUDA: ні" in text
     mac = {"platform": "darwin", "machine": "arm64", "mlx": True, "asr_backend": "mlx",
            "llm": "mlx-community/gemma-4-26b-a4b-it-4bit", "ffmpeg": "/opt/homebrew/bin/ffmpeg"}
     text, ok = render(mac)
@@ -2364,10 +2371,78 @@ def test_install_scripts_exist_and_parse():
     assert "trap" in sh.read_text(encoding="utf-8") and "git" in sh.read_text(encoding="utf-8")
     sh_text = sh.read_text(encoding="utf-8")
     assert "--overrides" in sh_text and "--torch-backend" in sh_text
+    assert "--prefetch --voice st" in sh_text
     text = ps1.read_text(encoding="utf-8-sig")
     assert "uv tool install" in text and "ollama" in text.lower() and "--doctor" in text
     assert "LASTEXITCODE" in text and "Git.Git" in text
     assert "--overrides" in text and "--torch-backend" in text
+    assert "--prefetch --voice st" in text
     assert "$env:Path + " in text  # Refresh-Path keeps the session PATH
     if shutil.which("pwsh"):
         assert subprocess.run(["pwsh", "-NoProfile", "-Command", f"[void][scriptblock]::Create((Get-Content -Raw '{ps1}'))"]).returncode == 0
+
+
+def test_ollama_probe_reports_server_and_model(monkeypatch):
+    import io
+    import json
+    import urllib.error
+    import urllib.request
+
+    import pytest
+
+    from uadub.llm import OllamaLLM
+
+    def refused(*a, **k):
+        raise urllib.error.URLError("Connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refused)
+    with pytest.raises(RuntimeError, match="ollama serve"):
+        OllamaLLM("gemma3:12b").probe()
+
+    def listing(names):
+        class R(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        return lambda *a, **k: R(json.dumps({"models": [{"name": n} for n in names]}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", listing(["llama3:8b"]))
+    with pytest.raises(RuntimeError, match="ollama pull gemma3:12b"):
+        OllamaLLM("gemma3:12b").probe()
+    monkeypatch.setattr(urllib.request, "urlopen", listing(["gemma3:12b"]))
+    OllamaLLM("gemma3:12b").probe()
+    monkeypatch.setattr(urllib.request, "urlopen", listing(["gemma3:latest"]))
+    OllamaLLM("gemma3").probe()
+
+
+def test_offline_switch_recognises_onnx_and_ct2_caches(tmp_path):
+    from uadub.asr import CT2_REPOS, ONNX_FILES, is_cached
+
+    never = lambda repo: False  # noqa: E731
+    d = tmp_path / "onnx" / "m"
+    d.mkdir(parents=True)
+    for f in ONNX_FILES:
+        (d / f).write_text("x")
+    assert is_cached("onnx", "m", hf_cached=never, cache=tmp_path)
+    (d / ONNX_FILES[-1]).unlink()
+    assert not is_cached("onnx", "m", hf_cached=never, cache=tmp_path)
+    seen = []
+    assert is_cached("ctranslate", "large-v3-turbo", hf_cached=lambda r: seen.append(r) or True)
+    assert seen == [CT2_REPOS["large-v3-turbo"]] == ["Systran/faster-whisper-large-v3-turbo"]
+    seen.clear()
+    assert is_cached("mlx", "org/model", hf_cached=lambda r: seen.append(r) or True)
+    assert seen == ["org/model"]
+
+
+def test_agent_command_line_per_platform(tmp_path):
+    from uadub.term import agent_command_line
+
+    d = tmp_path / "my dir"
+    mac = agent_command_line(d, "say 'hi'", platform="darwin")
+    assert mac.startswith("cd '") and " && claude '" in mac
+    win = agent_command_line(d, 'say "hi" $x', platform="win32", agent="opencode run")
+    assert "&&" not in win and win.startswith("cd '") and f"; opencode run " in win
+    assert '"say ""hi"" `$x"' in win
